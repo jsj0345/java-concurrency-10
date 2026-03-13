@@ -480,7 +480,231 @@ q22:37:01.925 [  printer] 출력 완료
 
 이때, 사용자가 입력을 하면 ConcurrentLinkedQueue에 내용물이 들어가고 printer 스레드에서 출력, 멈추는 상태 및 종료를 한다.
 
-하지만 q를 입력 했을때 sleep(3000);으로 인해 바로 종료되지 않는다 이럴땐 어떻게 해야 할까? 인터럽트를 활용해보자. 
+하지만 q를 입력 했을때 sleep(3000);으로 인해 바로 종료되지 않는다. 이럴땐 어떻게 해야 할까? 인터럽트를 활용해보자. 
+
+## 6. 인터럽트를 활용한 실용적인 예제2
+
+```java
+package thread.control.printer;
+
+import java.util.Queue;
+import java.util.Scanner;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+import static util.MyLogger.log;
+
+public class MyPrinterV2 {
+
+  public static void main(String[] args) {
+    Printer printer = new Printer();
+    Thread printerThread = new Thread(printer, "printer");
+    printerThread.start();
+    
+    Scanner userInput = new Scanner(System.in);
+    
+    while(true) {
+      System.out.println("프린터할 문서를 입력하세요. 종료 (q) : ");
+      String input = userInput.nextLine();
+      if(input.equals("q")) {
+        printer.work = false;
+        printerThread.interrupt();
+        break;
+      }
+      printer.addJob(input);
+    }
+  }
+  
+  static class Printer implements Runnable {
+    volatile boolean work = true;
+    Queue<String> jobQueue = new ConcurrentLinkedQueue<>();
+    
+    @Override
+    public void run() {
+      
+      while(work) {
+        if(jobQueue.isEmpty()) {
+          continue;
+        }
+        
+        try {
+          String job = jobQueue.poll();
+          log("출력 시작 : " + job + ", 대기 문서 : " + jobQueue);
+          Thread.sleep(3000);
+          log("출력 완료 : " + job);
+        } catch (InterruptedException e) {
+          log("인터럽트!");
+          break;
+        }
+      }
+      log("프린터 종료");
+    }
+    
+    public void addJob(String input) {
+      jobQueue.offer(input); 
+    }
+    
+  }
+  
+  
+  
+}
+```
+
+## 7. yield
+
+어떤 스레드를 얼마나 실행할지는 운영체제가 스케줄링을 통해 결정한다.
+
+그런데 특정 스레드가 크게 바쁘지 않은 상황이어서 다른 스레드에 CPU 실행 기회를 양보하고 싶을 수 있다.
+
+이렇게 양보하면 스케줄링 큐에 대기 중인 다른 스레드가 CPU 실행 기회를 더 빨리 얻을 수 있다.
+
+```java
+package thread.control.yield;
+
+import static util.ThreadUtils.sleep;
+
+public class YieldMain {
+
+  static final int THREAD_COUNT = 1000;
+
+  public static void main(String[] args) {
+    for (int i = 0; i < THREAD_COUNT; i++) {
+      Thread thread = new Thread(new MyRunnable());
+      thread.start();
+    }
+  }
+  
+  static class MyRunnable implements Runnable {
+    
+    @Override
+    public void run() {
+      for(int i = 0; i < 10; i++) {
+        System.out.println(Thread.currentThread().getName() + " - " + i);
+        //1. empty
+        //sleep(1); // 2. sleep
+        //Thread.yield(); // 3. yield
+      }
+    }
+  }
+
+}
+```
+
+먼저 위 코드처럼 출력만 나오게하고 sleep 메소드와 yield 메소드를 쓰지 않는 경우를 보자.
+
+결과는 다음과 같다. 
+
+```text
+Thread-962 - 0
+Thread-962 - 1
+Thread-962 - 2
+Thread-962 - 3
+Thread-962 - 4
+Thread-996 - 5
+Thread-996 - 6
+Thread-996 - 7
+Thread-996 - 8
+Thread-996 - 9
+Thread-999 - 2
+Thread-999 - 3
+Thread-999 - 4
+Thread-999 - 5
+Thread-999 - 6
+Thread-999 - 7
+Thread-999 - 8
+Thread-999 - 9
+```
+
+특정 스레드가 쭉 수행된 다음에 다른 스레드가 수행되는 것을 확인할 수 있다.
+
+다음은 sleep() 을 썼을 때를 보자.
+
+결과는 다음과 같다. 
+
+```text
+Thread-478 - 0
+Thread-480 - 0
+Thread-481 - 0
+Thread-483 - 0
+Thread-184 - 5
+Thread-376 - 3
+Thread-473 - 1
+Thread-174 - 8
+Thread-101 - 8
+Thread-554 - 0
+Thread-135 - 5
+Thread-393 - 2
+Thread-341 - 8
+Thread-201 - 4
+Thread-383 - 3
+Thread-461 - 2
+Thread-291 - 5
+Thread-196 - 6
+Thread-64 - 7
+Thread-289 - 6
+Thread-354 - 6
+Thread-526 - 3
+Thread-58 - 6
+Thread-69 - 8
+```
+
+sleep(1)을 사용해서 스레드의 상태를 1밀리초 동안 아주 잠깐 RUNNABLE -> TIMED_WAITING으로 변경 한다.
+
+이렇게 되면 스레드는 CPU 자원을 사용하지 않고, 실행 스케줄링에서 잠시 제외된다.
+
+1 밀리초의 대기 시간 이후 다시 TIMED_WAITING -> RUNNABLE 상태가 되면서 실행 스케줄링에 포함된다. 
+
+결과적으로 TIMED_WAITING 상태가 되면서 다른 스레드에 실행을 양보하게 된다.
+
+그리고 스케줄링 큐에 대기 중인 다른 스레드가 CPU의 실행 기회를 빨리 얻을 수 있다.
+
+하지만 이 방식은 RUNNABLE -> TIMED_WAITING -> RUNNABLE로 변경되는 복잡한 과정을 거치고,
+
+또 특정 시간 만큼 스레드가 실행되지 않는 단점이 있다. 
+
+예를 들어서 양보할 스레드가 없으면 스레드를 더 실행하는 것이 나을 수도 있는데 
+
+이 방법 같은 경우에는 양보할 스레드가 없음에도 불구하고 내 스레드까지 잠깐 실행되지 않는 것이다.
+
+이번엔 yield()를 써보자.
+
+```text
+Thread-958 - 6
+Thread-982 - 8
+Thread-934 - 8
+Thread-901 - 9
+Thread-902 - 8
+Thread-902 - 9
+Thread-905 - 9
+Thread-945 - 8
+Thread-945 - 9
+Thread-974 - 7
+Thread-974 - 8
+Thread-974 - 9
+Thread-985 - 7
+Thread-898 - 7
+Thread-969 - 9
+Thread-986 - 9
+Thread-977 - 9
+Thread-958 - 7
+Thread-958 - 8
+Thread-958 - 9
+Thread-982 - 9
+Thread-934 - 9
+Thread-898 - 8
+Thread-985 - 8
+Thread-985 - 9
+Thread-898 - 9
+```
+
+yield()의 작동
+
+- Thread.yield() 메서드는 현재 실행 중인 스레드가 자발적으로 CPU를 양보하여 다른 스레드가 실행될 수 있도록 한다.
+
+- yield() 메서드를 호출한 스레드는 RUNNABLE 상태를 유지하면서 CPU를 양보한다. 
+
+즉, 이 스레드는 스케줄링 큐에 들어가면서 다른 스레드에게 CPU 사용 기회를 넘긴다. 
+
 
 
 
