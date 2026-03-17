@@ -159,4 +159,95 @@ volatile boolean runFlag = true; 를 주석 해제하자.
 
 단, 캐시 메모리를 사용할 때 성능이 느려지는 단점이 있기 때문에 꼭 필요한 곳에만 사용하는 것이 좋다.
 
+## 4. volatile, 메모리 가시성4
+
+volatile을 미적용 한 코드를 보자.
+
+```java
+package thread.volatile1;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class VolatileCountMain {
+
+  public static void main(String[] args) {
+    MyTask task = new MyTask();
+    Thread t = new Thread(task, "work");
+    
+    t.start();
+    
+    sleep(1000);
+    
+    task.flag = false;
+    log("flag = " + task.flag + ", count = " + task.count + " in main");
+  }
+  
+  static class MyTask implements Runnable {
+    boolean flag = true;
+    log count;
+    //volatile boolean flag = true;
+    //volatile long count;
+    
+    @Override
+    public void run() {
+      while(flag) {
+        count++;
+        
+        if(count % 100_000_000 == 0) {
+          log("flag = " + flag + ", count = " + count  + " in while()");
+        }
+      }
+      
+      log("flag = " + flag + ", count = " + count + "종료"); 
+      
+    }
+  }
+  
+}
+```
+
+결과는 다음과 같다.
+
+```text
+19:34:54.560 [     work] flag = true, count = 100000000 in while()
+19:34:54.840 [     work] flag = true, count = 200000000 in while()
+19:34:55.119 [     work] flag = true, count = 300000000 in while()
+19:34:55.291 [     main] flag = false, count = 369389701 in while()
+19:34:55.361 [     work] flag = true, count = 400000000 in while()
+19:34:55.362 [     work] flag = false, count = 400000000 종료
+```
+
+결과를 보면 main 스레드에서 flag가 false일때, 카운트 값이 369389701인데 
+
+work 스레드가 false일때는 카운트 값이 400000000이다.
+
+서로 false일때 값이 다르다. 
+
+캐시 메모리를 메인 메모리에 반영하거나, 메인 메모리의 변경 내역을 캐시 메모리에 다시 불러오는 것은 언제 발생할까?
+
+이 부분은 CPU 설계 방식과 실행 환경에 따라 다를 수 있다. 즉시 반영될 수도 있고, 몇 밀리초 후에 될수도 있고,
+
+평생 반영되지 않을 수도 있다.
+
+결국 메모리 가시성 문제를 해결하려면 volatile 키워드를 사용해야 한다.
+
+위 코드에서 flag와 count에 volatile 키워드를 추가해보자.
+
+그리고나서 코드를 실행하면 다음과 같은 결과가 나온다.
+
+```text
+19:41:17.380 [     work] flag = false, count = 79322136 종료
+19:41:17.380 [     main] flag = false, count = 79322136 in while()
+```
+
+main 스레드가 flag를 변경하는 시점에 work 스레드도 flag의 변경 값을 정확하게 확인 할 수 있다.
+
+
+
+
+
+
+
+
 
