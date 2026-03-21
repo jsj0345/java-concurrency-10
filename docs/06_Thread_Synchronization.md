@@ -454,6 +454,128 @@ public boolean withdraw(int amount) {
 }
 ```
 
+## 6. 동기화를 활용한 문제
+
+다음 코드의 결과는 20000이 되어야 하는데 왜 20000이 안나올까?
+
+```java
+package thread.sync.test;
+
+public class SyncTest1BadMain {
+
+  public static void main(String[] args) throws InterruptedException {
+    Counter counter = new Counter();
+
+    Runnable task = new Runnable() {
+      @Override
+      public void run() {
+        for (int i = 0; i < 10000; i++) {
+          counter.increment();
+        }
+      }
+    };
+
+    Thread thread1 = new Thread(task);
+    Thread thread2 = new Thread(task);
+    
+    thread1.start();
+    thread2.start();
+    thread1.join();
+    thread2.join();
+    System.out.println("결과: " + counter.getCount());
+  }
+  
+  static class Counter {
+    private int count = 0;
+    
+    public void increment() {
+      count = count + 1;
+    }
+    
+    public int getCount() {
+      return count; 
+    }
+  }
+
+}
+```
+
+결과는 다음과 같다.
+
+```text
+결과 : 19276
+결과 : 11530
+결과 : 11625
+```
+
+20000이 안나오고 11530, 11625, 19276 이렇게 나온다.
+
+왜 이렇게 나오는걸까?
+
+두개의 스레드를 각각 스레드1,2라고 생각하면 
+
+스레드1과 스레드2가 공유 자원에 동시에 접근 해서 count가 0인데 이 상태에서 1을 더하므로
+
+count가 1이된다. 또 동시에 접근하면 count가 2가 될것이다.
+
+이미 네번을 더했는데 동시에 접근한 이유로 count값은 4가 아닌 2가 된다.
+
+위에 11530, 11625, 19276이 나온 이유는 10000번을 더하면서 동시에 공유 자원에 접근하지 않는 경우도
+
+있기 때문이다.
+
+따라서, 위 문제의 결과를 20000으로 나오게 하려면 public synchronized void increment 라고 작성해주면 된다.
+
+다음 문제를 보도록 하자.
+
+```java
+package thread.sync.test;
+
+import static util.MyLogger.log;
+
+public class SyncTest2Main {
+  
+  public static void main(String[] args) throws InterruptedException {
+    MyCounter myCounter = new MyCounter();
+
+    Runnable task = new Runnable() {
+      @Override
+      public void run() {
+        myCounter.count();
+      }
+    };
+
+    Thread thread1 = new Thread(task, "Thread-1");
+    Thread thread2 = new Thread(task, "Thread-2");
+    
+    thread1.start();
+    thread2.start(); 
+  }
+  
+  static class MyCounter {
+    
+    public void count() {
+      int localValue = 0;
+      for (int i = 0; i < 1000; i++) {
+        localValue = localValue + 1;
+      }
+      log("결과 : " + localValue); 
+    }
+  }
+}
+```
+
+```text
+17:39:40.814 [ Thread-1] 결과 : 1000
+17:39:40.814 [ Thread-2] 결과 : 1000
+```
+
+이건 각각의 스레드가 다른 스택 영역에 할당 되는데 지역 변수여서 
+해당 영역에 있는 스택 프레임 안에만 있는 변수여서 동시성 문제가 발생하지 않는다. 
+
+
+
+
 
 
 
