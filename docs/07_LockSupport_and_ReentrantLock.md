@@ -394,6 +394,181 @@ public class BankAccountV4 implements BankAccount {
 -> 따라서 lock.unlock()은 반드시 finally 블럭에 작성해야한다. 이렇게 하면 검증에 실패해서 중간에
 return을 호출해도 또는 중간에 예상치 못한 예외가 발생해도 lock.unlock()이 반드시 호출된다.
 
+## 5. ReentrantLock - 대기 중단
+
+ReentrantLock을 사용하면 락을 무한대기 하지 않고, 중간에 빠져나오는 것이 가능하다.
+
+심지어 락을 얻을 수 없다면 기다리지 않고 즉시 빠져나오는 것도 가능하다. 다음 기능들을 어떻게 활용하는지 알아보자.
+
+boolean tryLock()
+- 락 획득을 시도하고, 즉시 성공 여부를 반환한다. 만약 다른 스레드가 이미 락을 획득했다면 false를 반환하고,
+그렇지 않으면 락을 획득하고 true를 반환한다.
+
+boolean tryLock(long time, TimeUnit unit)
+- 주어진 시간 동안 락 획득을 시도한다. 주어진 시간 안에 락을 획득하면 true를 반환한다.
+주어진 시간이 지나도 락을 획득하지 못한 경우 false를 반환한다. 이 메서드는 대기 중 인터럽트가 발생하면
+InterruptedException이 발생하며 락 획득을 포기한다.
+
+tryLock() 예시 코드를 보자.
+
+```java
+package thread.sync;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class BankAccountV5 implements BankAccount {
+  private int balance;
+  
+  private final Lock lock = new ReentrantLock();
+  
+  public BankAccountV5(int initialBalance) {
+    this.balance = initialBalance;
+  }
+  
+  @Override
+  public boolean withdraw(int amount) {
+    log("거래 시작 : " + getClass().getSimpleName());
+    
+    if(!lock.tryLock()) {
+      log("[진입 실패] 이미 처리중인 작업이 있습니다.");
+      return false;
+    }
+    
+    try {
+      log("[검증 시작] 출금액 : " + amount + ", 잔액 : " + balance);
+      if(balance < amount) {
+        log("[검증 실패] 출금액 : " + amount + ", 잔액 : " + balance);
+        return false;
+      }
+      sleep(1000);
+      balance = balance - amount;
+      log("[출금 완료] 출금액 : " + amount + ", 변경 잔액 : " + balance);
+    } finally {
+      lock.unlock(); 
+    }
+    log("거래 종료");
+    return true;
+  }
+  
+  @Override
+  public int getBalance() {
+    lock.lock();
+    try {
+      return balance;
+    } finally {
+      lock.unlock(); 
+    }
+  }
+}
+```
+
+결과는 다음과 같다.
+
+```text
+17:04:44.927 [       t1] 거래 시작 : BankAccountV5
+17:04:44.927 [       t2] 거래 시작 : BankAccountV5
+17:04:44.931 [       t2] [진입 실패] 이미 처리중인 작업이 있습니다.
+17:04:44.943 [       t1] [검증 시작] 출금액 : 800, 잔액 : 1000
+17:04:44.944 [       t1] [검증 완료] 출금액 : 800, 잔액 : 1000
+17:04:45.394 [     main] t1 state : TIMED_WAITING
+17:04:45.395 [     main] t2 state : TERMINATED
+17:04:45.950 [       t1] [출금 완료] 출금액 : 800, 잔액 : 200
+17:04:45.951 [       t1] 거래 종료
+17:04:45.955 [     main] 최종 잔액 : 200
+```
+
+t1 스레드가 먼저 락을 획득하고 임계 영역을 수행한다. t2 스레드는 락이 없다는 것을 확인하고 lock.tryLock()에서 즉시 빠져나온다. 이때 false가 반환된다.
+[진입 실패] 이미 처리중인 작업이 있습니다. 를 출력하고 false를 반환하면서 메서드를 종료한다.
+t1 스레드는 임계 영역의 수행을 완료하고 거래를 종료한다. 마지막으로 락을 반납한다.
+
+tryLock(시간)을 사용해서 특정 시간 만큼만 락을 대기하는 예를 알아보자.
+
+```java
+package thread.sync;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class BankAccountV5 implements BankAccount {
+  private int balance;
+
+  private final Lock lock = new ReentrantLock();
+
+  public BankAccountV5(int initialBalance) {
+    this.balance = initialBalance;
+  }
+
+  @Override
+  public boolean withdraw(int amount) {
+    log("거래 시작 : " + getClass().getSimpleName());
+
+    try {
+      if (!lock.tryLock(500, TimeUnit.MICROSECONDS)) {
+        log("[진입 실패] 이미 처리중인 작업이 있습니다.");
+        return false;
+      }
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e); 
+    }
+
+    try {
+      log("[검증 시작] 출금액 : " + amount + ", 잔액 : " + balance);
+      if (balance < amount) {
+        log("[검증 실패] 출금액 : " + amount + ", 잔액 : " + balance);
+        return false;
+      }
+      sleep(1000);
+      balance = balance - amount;
+      log("[출금 완료] 출금액 : " + amount + ", 변경 잔액 : " + balance);
+    } finally {
+      lock.unlock();
+    }
+    log("거래 종료");
+    return true;
+  }
+
+  @Override
+  public int getBalance() {
+    lock.lock();
+    try {
+      return balance;
+    } finally {
+      lock.unlock();
+    }
+  }
+}
+```
+
+결과는 다음과 같다.
+
+```text
+17:14:15.606 [       t1] 거래 시작 : BankAccountV6
+17:14:15.606 [       t2] 거래 시작 : BankAccountV6
+17:14:15.619 [       t1] [검증 시작] 출금액 : 800, 잔액 : 1000
+17:14:15.620 [       t1] [검증 완료] 출금액 : 800, 잔액 : 1000
+17:14:16.072 [     main] t1 state : TIMED_WAITING
+17:14:16.072 [     main] t2 state : TIMED_WAITING
+17:14:16.110 [       t2] [진입 실패] 이미 처리중인 작업이 있습니다.
+17:14:16.629 [       t1] [출금 완료] 출금액 : 800, 잔액 : 200
+17:14:16.630 [       t1] 거래 종료
+17:14:16.634 [     main] 최종 잔액 : 200
+```
+
+먼저 t1스레드가 락을 획득하여 실행을 하고 t2스레드는 락을 획득하지 못해서 0.5초동안 대기한다.
+메인 스레드는 t1,t2스레드 상태를 체크한다.(TIMED_WAITING)
+t1 스레드는 1초동안 대기해야 하기 때문에 락을 갖고 있는데 t2는 0.5초동안만 대기하는 것이므로 락을 획득하지 못하고 포기한다.
+이러한 이유로 위와 같은 결과가 나온다. 
+
+
+
 
 
 
