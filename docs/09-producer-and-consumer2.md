@@ -413,3 +413,401 @@ ReentrantLock
 -> WAITING 상태로 대기
 -> 다른 스레드가 condition.signal()을 호출 했을 때 condition 객체의 스레드 대기 공간에서 나감
 
+**중간 정리 - 생산자 소비자 문제**
+08-producer-consumer 마크다운 파일에 있던 BoundedQueue버전1부터 현재 위에서 정리했던 BoundedQueue버전5까지
+잠깐 분석 하는 시간을 갖도록 하자. 
+
+**BoundedQueueV1**
+- 단순한 큐 자료 구조이다. 스레드를 제어할 수 없기 때문에, 버퍼가 가득 차거나, 버퍼에 데이터가 없는 한정된 버퍼 상황에서 문제가
+발생한다. 
+- 버퍼가 가득 찬 경우 : 생산자의 데이터를 버린다.
+- 버퍼에 데이터가 없는 경우 : 소비자는 데이터를 획득 할 수 없다.
+
+**BoundedQueueV2**
+- 앞서 발생한 문제를 해결하기 위해 반복문을 사용해서 스레드를 대기하는 방법을 적용했다. 하지만
+synchronized 임계 영역 안에서 락을 들고 대기하기 때문에, 다른 스레드가 임계 영역에 접근할 수 없는 문제가 발생했다.
+결과적으로 나머지 스레드는 모두 BLOCKED 상태가 되고, 자바 스레드 세상이 멈추는 심각한 문제가 발생했다.
+
+**BoundedQueueV3**
+- synchronized와 함께 사용할 수 있는 wait(), notify(), notifyAll()을 사용해서 문제를 해결했다.
+wait()를 사용하면 스레드가 대기할 때, 락을 반납하고 대기한다. 이후에 notify()를 호출하면 스레드가 깨어나면서 락 획득을 시도한다.
+이때 락을 획득하면 RUNNABLE 상태가 되고, 락을 획득하지 못하면 락 획득을 대기하는 BLOCKED 상태가 된다.
+- 이렇게 해서 스레드를 제어하는 큐 자료 구조를 만들 수 있었다. 생산자 스레드는 버퍼가 가득차면 버퍼에 여유가 생길 때 까지
+대기한다. 소비자 스레드는 버퍼에 데이터가 없으면 버퍼에 데이터가 들어올 때 까지 대기한다.
+- 이런 구현 덕분에 단순한 자료 구조를 넘어서 스레드까지 제어할 수 있는 자료 구조를 완성했다. 
+- 이 방식의 단점은 스레드가 대기하는 대기 집합이 하나이기 때문에, 원하는 스레드를 선택해서 깨울 수 없다는 문제가
+있었다. 예를 들어, 생산자는 데이터를 생산한 다음 대기하는 소비자를 깨워야 하는데, 대기하는 생산자를 깨울 수 있다.
+따라서 비효율이 발생한다. 물론 이렇게 해도 비효율이 있을 뿐 로직은 모두 정상 작동한다.
+
+**BoundedQueueV4**
+- synchronized와 wait(), notify()를 사용해서 구현하면 스레드 대기 집합이 하나라는 단점이 있다.
+이 단점을 극복하려면 스레드 대기 집합을 생산자 전용과 소비자 전용으로 나누어야 한다. 이렇게 하려면 Lock을 사용해야 한다.
+- 여기서는 단순히 synchronized와 wait(), notify()를 사용해서 구현한 코드를 Lock을 사용하도록 변경했다.
+
+**BoundedQueueV5**
+- Lock(ReentrantLock)은 Condition이라는 스레드 대기 공간을 제공한다. 이 스레드 대기 공간을
+원하는 만큼 따로 만들 수 있다.
+-> productCond : 생산자 스레드를 위한 전용 대기 공간
+-> consumerCond : 소비자 스레드를 위한 전용 대기 공간 
+
+## 4. BlockingQueue 
+
+BlockingQueue를 사용하도록 기존 코드를 변경해보자.
+
+```java
+package thread.bounded;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+
+public class BoundedQueueV6_1 implements BoundedQueue {
+  
+  private BlockingQueue<String> queue;
+  
+  public BoundedQueueV6_1(int max) {
+    queue = new ArrayBlockingQueue<>(max);
+  }
+  
+  public void put(String data) {
+    try {
+      queue.put(data);
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    }
+  }
+  
+  public String take() {
+    try {
+      return queue.take();
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    }
+  }
+  
+  @Override
+  public String toString() {
+    return queue.toString(); 
+  }
+  
+}
+```
+- BlockingQueue.put(data) : BoundedQueueV5.put() 과 같은 기능을 제공한다.
+- BlockingQueue.take() : BoundedQueueV5.take() 와 같은 기능을 제공한다.
+
+ArrayBlockingQueue.put() 의 코드를 살펴보자.
+
+```java
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class ArrayBlockingQueue {
+
+  final Object[] items;
+  int count;
+  ReentrantLock lock;
+  Condition notEmpty; // 소비자 스레드가 대기하는 condition
+  Condition notFull; // 생산자 스레드가 대기하는 condition
+
+  public void put(E e) throws InterruptedException {
+    lock.lockInterruptibly();
+    try {
+      while (count == items.length) {
+        notFull.await(); 
+      }
+      enqueue(e);
+    } finally {
+      lock.unlock(); 
+    }
+  }
+  
+  private void enqueue(E e) {
+    items[putIndex] = e;
+    count++;
+    notEmpty.signal(); 
+  }
+
+}
+```
+
+BoundMain에서 코드를 실행하면 결과는 다음과 같다.
+
+```text
+17:10:27.425 [     main] == [생산자 먼저 실행] 시작, BoundedQueueV6_1 ==
+
+17:10:27.435 [     main] 생산자 시작
+17:10:27.477 [producer1] [생산 시도] data1 -> []
+17:10:27.478 [producer1] [생산 완료] data1 -> [data1]
+17:10:27.567 [producer2] [생산 시도] data2 -> [data1]
+17:10:27.568 [producer2] [생산 완료] data2 -> [data1, data2]
+17:10:27.670 [producer3] [생산 시도] data3 -> [data1, data2]
+
+17:10:27.779 [     main] 현재 상태 출력, 큐 데이터 : [data1, data2]
+17:10:27.781 [     main] producer1: TERMINATED
+17:10:27.782 [     main] producer2: TERMINATED
+17:10:27.783 [     main] producer3: WAITING
+
+17:10:27.784 [     main] 소비자 시작
+17:10:27.789 [consumer1] [소비 시도]  ? <- [data1, data2]
+17:10:27.791 [consumer1] [소비 완료] data1 <- [data2]
+17:10:27.791 [producer3] [생산 완료] data3 -> [data2, data3]
+17:10:27.903 [consumer2] [소비 시도]  ? <- [data2, data3]
+17:10:27.904 [consumer2] [소비 완료] data2 <- [data3]
+17:10:28.011 [consumer3] [소비 시도]  ? <- [data3]
+17:10:28.012 [consumer3] [소비 완료] data3 <- []
+
+17:10:28.118 [     main] 현재 상태 출력, 큐 데이터 : []
+17:10:28.119 [     main] producer1: TERMINATED
+17:10:28.120 [     main] producer2: TERMINATED
+17:10:28.122 [     main] producer3: TERMINATED
+17:10:28.123 [     main] consumer1: TERMINATED
+17:10:28.126 [     main] consumer2: TERMINATED
+17:10:28.127 [     main] consumer3: TERMINATED
+17:10:28.129 [     main] == [생산자 먼저 실행] 종료, BoundedQueueV6_1 ==
+```
+
+일부 로그 메시지가 안나오긴 했지만 결과는 거의 비슷하다. 
+
+## 5. BlockingQueue - 기능
+
+멀티스레드를 사용할 때는 응답성이 중요하다. 예를 들어서 대기 상태에 있어도, 고객이 중지 요청을 하거나,
+또는 너무 오래 대기한 경우 포기하고 빠져나갈 수 있는 방법이 필요하다. 
+생산자가 무언가 데이터를 생산하는데, 버퍼가 빠지지 않아서 너무 오래 대기해야 한다면, 무한정 기다리는 것 보다는 작업을 포기하고
+고객분께는 "죄송합니다. 현재 시스템에 문제가 있습니다. 나중에 다시 시도해주세요." 라고 하는 것이 더 나은 선택일 것이다.
+
+예를 들어 생산자는 서버에 상품을 주문하는 고객일 수 있다. 고객이 상품을 주문하면, 고객의 요청을 생산자 스레드가 받아서
+중간에 있는 큐에 넣어준다고 가정하자. 소비자 스레드는 큐에서 주문 요청을 꺼내서 주문을 처리하는 스레드다.
+만약에 선착순 할인 이벤트가 크게 성공해서 갑자기 주문이 폭주하면 주문을 만드는 생산자 스레드는 매우 바쁘게
+주문을 큐에 넣게 된다. 
+
+큐의 한계가 1000개라고 가정하자. 생산자 스레드는 순간적으로 1000개가 넘는 주문을 큐에 담았다. 
+소비자 스레드는 한 번에 겨우 10개 정도의 주문만 처리할 수 있다. 이 상황에서 생산자 스레드는 계속 생산을 시도한다.
+결국 소비가 생산을 따라가지 못하고, 큐가 가득 차게 된다. 
+
+이런 상황이 되면 수 많은 생산자 스레드는 큐 앞에서 대기하게 된다. 결국 고객도 응답을 받지 못하고 무한 대기하게 된다.
+고객 입장에서 무작정 무한 대기하고 결과도 알 수 없는 상황이 가장 나쁜 상황일 것이다.
+
+이렇게 생산자 스레드가 큐에 데이터를 추가할 때 큐가 가득 찬 경우, 또는 큐에 데이터를 추가하기 위해 너무 오래 대기하는 경우에는
+데이터 추가를 포기하고, 고객에게 주문 폭주로 너무 많은 사용자가 몰려서 요청을 처리할 수 없다거나, 또는
+나중에 다시 시도해달라고 하는 것이 더 나은 선택일 것이다. 
+
+이런 문제를 해결하기 위해 BlockingQueue는 각 상황에 맞는 다양한 메서드를 제공한다.
+
+**Throws Exception - 대기 시 예외**
+- add(e) : 지정된 요소를 큐에 추가하며, 큐가 가득 차면 IllegalStateException 예외를 던진다.
+- remove() : 큐에서 요소를 제거하며 반환한다. 큐가 비어 있으면 NoSuchElementException 예외를 던진다.
+- element() : 큐의 머리 요소를 반환하지만, 요소를 큐에서 제거하지 않는다. 큐가 비어 있으면 NoSuchElementException 예외를 던진다.
+
+**Special Value - 대기 시 즉시 반환**
+- offer(e) : 지정된 요소를 큐에 추가하려고 시도하며, 큐가 가득 차면 false를 반환한다.
+- poll() : 큐에서 요소를 제거하고 반환한다. 큐가 비어 있으면 null을 반환한다.
+- peek() : 큐의 머리 요소를 반환하지만, 요소를 큐에서 제거하지 않는다. 큐가 비어 있으면 null을 반환한다. 
+
+**Blocks - 대기**
+- put(e) : 지정된 요소를 큐에 추가할 때까지 대기한다. 큐가 가득 차면 공간이 생길 때까지 대기한다.
+- take() : 큐에서 요소를 제거하고 반환한다. 큐가 비어 있으면 요소가 준비될 때까지 대기한다.
+
+**Times Out - 시간 대기**
+- offer(e, time, unit) : 지정된 요소를 큐에 추가하려고 시도하며, 지정된 시간 동안 큐가 비워지기를 기다리다가
+시간이 초과되면 false를 반환한다. 
+- poll(time, unit) : 큐에서 요소를 제거하고 반환한다. 큐에 요소가 없다면 지정된 시간 동안 요소가 준비되기를
+기다리다가 시간이 초과되면 null을 반환한다.
+
+```java
+package thread.bounded;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+
+import static util.MyLogger.log;
+
+public class BoundedQueueV6_2 implements BoundedQueue {
+
+  private BlockingQueue<String> queue;
+
+  public BoundedQueueV6_2(int max) {
+    queue = new ArrayBlockingQueue<>(max);
+  }
+
+  public void put(String data) {
+    boolean result = queue.offer(data);
+    log("저장 결과 시도 = " + result);
+  }
+
+  public String take() {
+    return queue.poll();
+  }
+
+  @Override
+  public String toString() {
+    return queue.toString();
+  }
+
+}
+```
+
+결과는 다음과 같다. 
+
+```text
+11:16:00.144 [     main] == [생산자 먼저 실행] 시작, BoundedQueueV6_2 ==
+
+11:16:00.148 [     main] 생산자 시작
+11:16:00.167 [producer1] [생산 시도] data1 -> []
+11:16:00.168 [producer1] 저장 시도 결과 = true
+11:16:00.169 [producer1] [생산 완료] data1 -> [data1]
+11:16:00.264 [producer2] [생산 시도] data2 -> [data1]
+11:16:00.264 [producer2] 저장 시도 결과 = true
+11:16:00.265 [producer2] [생산 완료] data2 -> [data1, data2]
+11:16:00.374 [producer3] [생산 시도] data3 -> [data1, data2]
+11:16:00.377 [producer3] 저장 시도 결과 = false
+11:16:00.380 [producer3] [생산 완료] data3 -> [data1, data2]
+
+11:16:00.485 [     main] 현재 상태 출력, 큐 데이터 : [data1, data2]
+11:16:00.486 [     main] producer1: TERMINATED
+11:16:00.486 [     main] producer2: TERMINATED
+11:16:00.487 [     main] producer3: TERMINATED
+
+11:16:00.487 [     main] 소비자 시작
+11:16:00.490 [consumer1] [소비 시도]  ? <- [data1, data2]
+11:16:00.491 [consumer1] [소비 완료] data1 <- [data2]
+11:16:00.594 [consumer2] [소비 시도]  ? <- [data2]
+11:16:00.594 [consumer2] [소비 완료] data2 <- []
+11:16:00.694 [consumer3] [소비 시도]  ? <- []
+11:16:00.695 [consumer3] [소비 완료] null <- []
+
+11:16:00.795 [     main] 현재 상태 출력, 큐 데이터 : []
+11:16:00.796 [     main] producer1: TERMINATED
+11:16:00.796 [     main] producer2: TERMINATED
+11:16:00.796 [     main] producer3: TERMINATED
+11:16:00.797 [     main] consumer1: TERMINATED
+11:16:00.797 [     main] consumer2: TERMINATED
+11:16:00.797 [     main] consumer3: TERMINATED
+11:16:00.798 [     main] == [생산자 먼저 실행] 종료, BoundedQueueV6_2 ==
+```
+실행 결과를 보면 11:16:00.374 [producer3] [생산 시도] data3 -> [data1, data2]
+이 부분에서는 이미 Queue의 공간이 다 찼기 때문에 데이터를 더 넣지 못한다.
+따라서, 저장 시도 결과는 false가 나오고 producer3 스레드는 큐에 데이터가 빠져 나올 때 까지 기다리지 않는다.
+offer(data)는 성공하면 true를 반환하고, 버퍼가 가득 차면 즉시 false를 반환한다. 
+
+소비자를 먼저 실행해보자. 
+
+```text
+11:22:09.491 [     main] == [소비자 먼저 실행] 시작, BoundedQueueV6_2 ==
+
+11:22:09.494 [     main] 소비자 시작
+11:22:09.503 [consumer1] [소비 시도]  ? <- []
+11:22:09.511 [consumer1] [소비 완료] null <- []
+11:22:09.614 [consumer2] [소비 시도]  ? <- []
+11:22:09.615 [consumer2] [소비 완료] null <- []
+11:22:09.718 [consumer3] [소비 시도]  ? <- []
+11:22:09.719 [consumer3] [소비 완료] null <- []
+
+11:22:09.828 [     main] 현재 상태 출력, 큐 데이터 : []
+11:22:09.829 [     main] consumer1: TERMINATED
+11:22:09.829 [     main] consumer2: TERMINATED
+11:22:09.829 [     main] consumer3: TERMINATED
+
+11:22:09.830 [     main] 생산자 시작
+11:22:09.833 [producer1] [생산 시도] data1 -> []
+11:22:09.833 [producer1] 저장 시도 결과 = true
+11:22:09.834 [producer1] [생산 완료] data1 -> [data1]
+11:22:09.947 [producer2] [생산 시도] data2 -> [data1]
+11:22:09.948 [producer2] 저장 시도 결과 = true
+11:22:09.948 [producer2] [생산 완료] data2 -> [data1, data2]
+11:22:10.058 [producer3] [생산 시도] data3 -> [data1, data2]
+11:22:10.059 [producer3] 저장 시도 결과 = false
+11:22:10.059 [producer3] [생산 완료] data3 -> [data1, data2]
+
+11:22:10.162 [     main] 현재 상태 출력, 큐 데이터 : [data1, data2]
+11:22:10.162 [     main] consumer1: TERMINATED
+11:22:10.163 [     main] consumer2: TERMINATED
+11:22:10.163 [     main] consumer3: TERMINATED
+11:22:10.164 [     main] producer1: TERMINATED
+11:22:10.164 [     main] producer2: TERMINATED
+11:22:10.164 [     main] producer3: TERMINATED
+11:22:10.165 [     main] == [소비자 먼저 실행] 종료, BoundedQueueV6_2 ==
+```
+
+take(), put()을 실행 할 때는 각각 큐에 공간이 있을 때 까지, 없을 때 까지를 기준으로 기다렸는데
+offer(), poll() 메소드는 기다리는거 없이 있으면 꺼내오고 없으면 넣는 상황이 없으면 그대로 논리값을 반환한다. 
+
+```java
+package thread.bounded;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
+
+import static util.MyLogger.log;
+
+public class BoundedQueueV6_3 implements BoundedQueue {
+    
+  private BlockingQueue<String> queue;
+  
+  public BoundedQueueV6_3(int max) {
+    queue = new ArrayBlockingQueue<>(max);
+  }
+  
+  public void put(String data) {
+    try {
+      boolean result = queue.offer(data, 1, TimeUnit.NANOSECONDS);
+      log("저장 시도 결과 = " + result);
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    }
+  }
+  
+  public String take() {
+    try {
+      return queue.poll(2, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    }
+  }
+  
+  @Override
+  public String toString() {
+    return queue.toString(); 
+  }
+}
+```
+
+```text
+11:38:08.685 [     main] == [생산자 먼저 실행] 시작, BoundedQueueV6_3 ==
+
+11:38:08.688 [     main] 생산자 시작
+11:38:08.700 [producer1] [생산 시도] data1 -> []
+11:38:08.701 [producer1] 저장 시도 결과 = true
+11:38:08.702 [producer1] [생산 완료] data1 -> [data1]
+11:38:08.808 [producer2] [생산 시도] data2 -> [data1]
+11:38:08.808 [producer2] 저장 시도 결과 = true
+11:38:08.808 [producer2] [생산 완료] data2 -> [data1, data2]
+11:38:08.918 [producer3] [생산 시도] data3 -> [data1, data2]
+11:38:08.919 [producer3] 저장 시도 결과 = false
+11:38:08.919 [producer3] [생산 완료] data3 -> [data1, data2]
+
+11:38:09.025 [     main] 현재 상태 출력, 큐 데이터 : [data1, data2]
+11:38:09.026 [     main] producer1: TERMINATED
+11:38:09.027 [     main] producer2: TERMINATED
+11:38:09.027 [     main] producer3: TERMINATED
+
+11:38:09.028 [     main] 소비자 시작
+11:38:09.030 [consumer1] [소비 시도]  ? <- [data1, data2]
+11:38:09.030 [consumer1] [소비 완료] data1 <- [data2]
+11:38:09.142 [consumer2] [소비 시도]  ? <- [data2]
+11:38:09.143 [consumer2] [소비 완료] data2 <- []
+11:38:09.245 [consumer3] [소비 시도]  ? <- []
+
+11:38:09.354 [     main] 현재 상태 출력, 큐 데이터 : []
+11:38:09.354 [     main] producer1: TERMINATED
+11:38:09.355 [     main] producer2: TERMINATED
+11:38:09.355 [     main] producer3: TERMINATED
+11:38:09.356 [     main] consumer1: TERMINATED
+11:38:09.356 [     main] consumer2: TERMINATED
+11:38:09.357 [     main] consumer3: TIMED_WAITING
+11:38:09.357 [     main] == [생산자 먼저 실행] 종료, BoundedQueueV6_3 ==
+11:38:11.261 [consumer3] [소비 완료] null <- []
+```
+
+코드를 보면 boolean result = queue.offer(data, 1, TimeUnit.NANOSECONDS); , return queue.poll(2, TimeUnit.SECONDS);
+시간 안에 큐에 데이터가 잠깐이라도 없을때랑 있을때를 기다리는건데 계속 기다리는게 아니라 1ns, 2ns만큼만 기다린다.
+근데 이 안에 조건을 만족하지 못해서 더이상 기다리지 않고 false값을 반환한다. 
