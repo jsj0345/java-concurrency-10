@@ -654,6 +654,169 @@ public class SpinLockMain {
 이건 앞에서 수없이 봤지만 동시성 문제로 인해 false값을 먼저 읽고 락을 획득 한 것이다.
 이걸 어떻게 해결 해야할까? CAS 연산을 이용해보자. 
 
+## 7. CAS 락 구현2
+이번에는 CAS를 사용해서 락을 구현해보자.
+
+```java
+package thread.cas.spinlock;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static util.MyLogger.log;
+
+public class SpinLock {
+  private final AtomicBoolean lock = new AtomicBoolean(false);
+  
+  public void lock() {
+    log("락 획득 시도");
+    while(!lock.compareAndSet(false, true)) {
+      // 락을 획득할 때 까지 스핀 대기(바쁜 대기)한다.
+      log("락 획득 실패 - 스핀 대기");
+    }
+    log("락 획득 완료");
+  }
+  
+  public void unlock() {
+    lock.set(false);
+    log("락 반납 완료"); 
+  }
+}
+```
+
+CAS 연산을 지원하는 AtomicBoolean을 사용했다.
+
+구현 원리는 단순하다.
+
+- 스레드가 락을 획득하면 lock의 값이 true가 된다.
+- 스레드가 락을 반납하면 lock의 값이 false가 된다. 
+
+- 스레드가 락을 획득하면 while문을 탈출한다. 
+- 스레드가 락을 획득하지 못하면 락을 획득할 때 까지 while문을 계속 반복 실행한다.
+
+락을 획득할 때 매우 중요한 부분이 있다. 바로 다음 두 연산을 하나로 만들어야 한다는 점이다.
+- 1. 락 사용 여부 확인
+- 2. 락의 값 변경
+
+락을 획득하기 위해 먼저 락의 사용 여부를 확인했을 때 lock의 현재 값이 반드시 false여야 한다.
+true는 이미 다른 스레드가 락을 획득했다는 뜻이다. 따라서 이 값이 false일 때만 락의 값을 변경할 수 있다.
+락의 값이 false인 것을 확인한 시점부터 lock의 값을 true로 변경할 때 까지 lock의 값은 반드시 false를 유지해야 한다.
+중간에 다른 스레드가 lock의 값을 true로 변경하면 안된다. 그러면 여러 스레드가 임계 영역을 통과하는 동시성 문제가 발생한다.
+
+코드를 실행해보자. 
+
+```text
+17:28:51.953 [ Thread-2] 락 획득 시도
+17:28:51.953 [ Thread-1] 락 획득 시도
+17:28:51.955 [ Thread-2] 락 획득 완료
+17:28:51.956 [ Thread-1] 락 획득 실패 - 스핀 대기
+17:28:51.956 [ Thread-2] 비즈니스 로직 실행
+17:28:51.956 [ Thread-1] 락 획득 실패 - 스핀 대기
+17:28:51.956 [ Thread-2] 락 반납 완료
+17:28:51.956 [ Thread-1] 락 획득 완료
+17:28:51.957 [ Thread-1] 비즈니스 로직 실행
+17:28:51.957 [ Thread-1] 락 반납 완료
+```
+
+lock의 초기값은 false이다.
+- Thread-1 : lock()을 호출해서 락 획득을 시도한다. 
+- Thread-2 : lock()을 호출해서 락 획득을 시도한다.
+- Thread-1 : while(!lock.compareAndSet(false, true))를 사용해서 락의 사용 여부를 확인하면서 변경을 시도한다. 
+-> lock.compareAndSet(false, true)
+-> CAS 연산을 사용했다. lock이 false면 lock의 값을 true로 변경한다.
+-> lock의 값이 false면 true로 변경한다. 변경에 성공했기 때문에 true를 반환한다.
+
+- Thread-2 : while(!lock.compareAndSet(false, true))를 사용해서 락의 사용 여부를 확인하면서
+변경을 시도한다.
+-> lock.compareAndSet(false, true)
+-> CAS 연산을 사용했다. lock이 false면 lock의 값을 true로 변경한다.
+-> lock의 값이 true이므로 값을 변경할 수 없다. 변경에 실패했기 때문에 false를 반환한다.
+-> 락 획득에 실패하고, 락을 획득할 때 까지 while문을 반복한다. 
+
+**CAS 단점**
+반복문과 CAS를 사용해서 락을 대체하는 방식에도 단점이 있다.
+SpinLockMain 코드에 sleep(1)을 넣고 실행해보자.
+
+```java
+package thread.cas.spinlock;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class SpinLockMain {
+  public static void main(String[] args) {
+    SpinLockBad spinLock = new SpinLockBad();
+
+    Runnable task = new Runnable() {
+      @Override
+      public void run() {
+        spinLock.lock();
+        try {
+          // critical section
+          log("비즈니스 로직 실행");
+          sleep(1); // 오래 걸리는 로직에서 스핀 락 사용 X. 
+        } finally {
+          spinLock.unlock();
+        }
+      }
+    };
+
+    Thread t1 = new Thread(task, "Thread-1");
+    Thread t2 = new Thread(task, "Thread-2");
+
+    t1.start();
+    t2.start();
+  }
+}
+```
+
+결과는 다음과 같다.
+
+```text
+17:37:24.381 [ Thread-1] 락 획득 시도
+17:37:24.381 [ Thread-2] 락 획득 시도
+17:37:24.384 [ Thread-1] 락 획득 완료
+17:37:24.385 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.385 [ Thread-1] 비즈니스 로직 실행
+17:37:24.385 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.386 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.386 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.386 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.387 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.387 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.387 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.387 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.388 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.388 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.388 [ Thread-2] 락 획득 실패 - 스핀 대기
+17:37:24.389 [ Thread-1] 락 반납 완료
+17:37:24.389 [ Thread-2] 락 획득 완료
+17:37:24.389 [ Thread-2] 비즈니스 로직 실행
+17:37:24.392 [ Thread-2] 락 반납 완료
+```
+
+이 방식은 락을 기다리는 스레드가 BLOCKED, WAITING 상태로 빠지지는 않지만, RUNNABLE 상태로 락을 획득할때 까지
+while문을 반복하는 문제가 있다. 따라서 락을 기다리는 스레드가 CPU를 계속 사용하면서 대기하는 것이다.
+BLOCKED, WAITING 상태의 스레드는 CPU를 거의 사용하지 않지만, RUNNABLE 상태로 while문을 반복
+실행하는 방식은 CPU 자원을 계속해서 사용하는 것이다.
+
+동기화 락을 사용하면 RUNNABLE 상태의 스레드가 BLOCKED, WAITING 상태에서 다시 RUNNABLE 상태로 이동한다.
+이 사이에 CPU 자원을 거의 사용하지 않을 수 있다.
+그래서 동기화 락을 사용하는 방식보다 스레드를 RUNNABLE로 살려둔 상태에서 계속 락 획득을 반복 체크하는 것이
+더 효율적인 경우에 이런 방식을 사용해야 한다. 이 방식은 스레드의 상태가 변경되지 않기 때문에
+매우 빠르게 락을 획득하고, 또 바로 실핼할 수 있는 장점이 있다. 
+
+어떤 경우에 CAS 연산이 효율적일까?
+안전한 임계 영역이 필요하지만, 연산이 길지 않고 매우 짧게 끝날 때 사용해야 한다.
+
+**스핀 락**
+스레드가 락이 해제되기를 기다리면서 반복문을 통해 계속해서 확인하는 모습이 마치 제자리에서 회전하는 것처럼 보인다.
+그래서 이런 방식을 "스핀 락"이라고도 부른다. 그리고 이런 방식에서 스레드가 락을 획득 할 때 까지 대기 하는 것을
+스핀 대기(spin-wait)또는 CPU 자원을 계속 사용하면서 바쁘게 대기한다고 해서 바쁜 대기라 한다.
+이런 스핀 락 방식은 아주 짧은 CPU 연산을 수행할 때 사용해야 효율적이다. 
+잘못 사용하면 오히려 CPU 자원을 더 많이 사용 할 수 있다.
+
+
+
 
 
 
