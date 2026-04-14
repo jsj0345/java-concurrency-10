@@ -625,7 +625,508 @@ Integer result = es.submit(new MyCallable());
 Future만 즉시 반환 받을 뿐이지, 작업의 결과를 얻으려면 future.get()을 호출해야 한다.
 그리고 이 시점에는 작업의 결과를 받을 때 까지 대기해야한다. 
 
+## 6. Future3 - 활용
+
+```java
+package thread.executor.future;
+
+import static util.MyLogger.log;
+
+public class SumTaskMainV1 {
+
+  public static void main(String[] args) throws InterruptedException {
+    SumTask task1 = new SumTask(1,50);
+    SumTask task2 = new SumTask(51, 100);
+    Thread thread1 = new Thread(task1, "thread-1");
+    Thread thread2 = new Thread(task2, "thread-2");
+    
+    thread1.start();
+    thread2.start();
+    
+    //스레드가 종료될 때 까지 대기
+    log("join() - main 스레드가 thread1, thread2 종료까지 대기");
+    thread1.join();
+    thread2.join();
+    log("main 스레드 대기 완료");
+    
+    log("task1.result = " + task1.result);
+    log("task2.result = " + task2.result);
+    
+    int sumAll = task1.result + task2.result;
+    log("task1 + task2 = " + sumAll);
+    log("End");
+  }
+  
+  static class SumTask implements Runnable {
+    int startValue;
+    int endValue;
+    int result = 0;
+    
+    public SumTask(int startValue, int endValue) {
+      this.startValue = startValue;
+      this.endValue = endValue;
+    }
+    
+    @Override
+    public void run() {
+      log("작업 시작");
+      
+      try {
+        Thread.sleep(2000);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+      
+      int sum = 0;
+      for (int i = startValue; i <= endValue; i++) {
+        sum += i;
+      }
+      result = sum;
+      
+      log("작업 완료 result = " + result); 
+    }
+  }
+  
+  
+}
+```
+실행 결과는 다음과 같다.
+
+```text
+20:00:37.980 [ thread-2] 작업 시작
+20:00:37.980 [ thread-1] 작업 시작
+20:00:37.980 [     main] join() - main 스레드가 thread1, thread2 종료까지 대기
+20:00:39.996 [ thread-2] 작업 완료 result = 3775
+20:00:39.996 [ thread-1] 작업 완료 result = 1275
+20:00:39.996 [     main] main 스레드 대기 완료
+20:00:39.997 [     main] task1.result = 1275
+20:00:39.997 [     main] task2.result = 3775
+20:00:39.998 [     main] task1 + task2 = 5050
+20:00:39.998 [     main] End
+```
+
+이 코드를 Callable과 ExecutorService로 처리해보자. 
+
+```java
+package thread.executor.future;
+
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+
+public class SumTaskMainV2 {
+
+  public static void main(String[] args) throws InterruptedException, ExecutionException {
+    SumTask task1 = new SumTask(1, 50);
+    SumTask task2 = new SumTask(51, 100);
+    ExecutorService es = Executors.newFixedThreadPool(2);
+    
+    Future<Integer> future1 = es.submit(task1);
+    Future<Integer> future2 = es.submit(task2);
+    
+    Integer sum1 = future1.get();
+    Integer sum2 = future2.get(); 
+    
+    log("task1.result = " + sum1);
+    log("task2.result = " + sum2);
+    
+    int sumAll = sum1 + sum2;
+    log("task1 + task2 = " + sumAll);
+    log("End");
+    
+    es.close(); 
+  }
+  
+  static class SumTask implements Callable<Integer> {
+    int startValue;
+    int endValue;
+    
+    public SumTask(int startValue, int endValue) {
+      this.startValue = startValue;
+      this.endValue = endValue;
+    }
+    
+    @Override
+    public Integer call() throws InterruptedException {
+      log("작업 시작");
+      Thread.sleep(2000);
+      int sum = 0;
+      for(int i = startValue; i <= endValue; i++) {
+        sum += i;
+      }
+      log("작업 완료 result = " + sum);
+      return sum; 
+    }
+  }
+  
+}
+```
+
+실행 결과는 다음과 같다.
+
+```text
+20:09:15.833 [pool-1-thread-2] 작업 시작
+20:09:15.833 [pool-1-thread-1] 작업 시작
+20:09:17.858 [pool-1-thread-1] 작업 완료 result = 1275
+20:09:17.858 [pool-1-thread-2] 작업 완료 result = 3775
+20:09:17.859 [     main] task1.result = 1275
+20:09:17.860 [     main] task2.result = 3775
+20:09:17.861 [     main] task1 + task2 = 5050
+20:09:17.862 [     main] End
+```
+
+ExecutorService와 Callable을 사용한 덕분에, 이전 코드보다 훨씬 직관적이고 깔끔하게 코드를 작성할 수 있었다.
+특히 작업의 결과를 반환하고, 요청 스레드에서 그 결과를 바로 받아서 처리하는 부분이 매우 직관적이다. 
+코드만 보면 마치 멀티스레드를 사용하지 않고, 단일 스레드 상황에서 일반적인 메서드를 호출하고 결과를 받는 것 처럼 느껴진다.
+
+그리고 스레드를 생성하고, Thread.join()과 같은 스레드를 관리하는 코드도 모두 제거할 수 있었다.
+추가로 Callable.call()은 throws InterruptedException과 같은 체크 예외도 던질 수 있다.
+
+## 7. Future4 - 이유 
+이제 Future가 필요한 이유를 코드를 통해 알아보자. 
+
+Future를 반환 하는 코드
+```java
+Future<Integer> future1 = es.submit(task1); // 블로킹X
+Future<Integer> future2 = es.submit(task2); // 블로킹X
+
+Integer sum1 = future1.get();
+Integer sum2 = future2.get();
+```
+
+Future 없이 결과를 직접 반환 하는 코드(가정)
+```java
+Integer sum1 = es.submit(task1); // 여기서 블로킹
+Integer sum2 = es.submit(task2); // 여기서 블로킹 
+```
+
+Future 없을 때를 생각해보자.
+
+먼저 ExecutorService가 Future 없이 결과를 직접 반환한다고 가정해보자.
+- 요청 스레드는 task1을 ExecutorService에 요청하고 결과를 기다린다.
+-> 작업 스레드가 작업을 수행하는데 2초가 걸린다.
+-> 요청 스레드는 결과를 받을 때 까지 2초간 대기한다.
+-> 요청 스레드는 2초 후에 결과를 받고 다음 라인을 수행한다. 
+
+요청 스레드는 task2를 ExecutorService에 요청하고 결과를 기다린다.
+-> 작업 스레드가 작업을 수행하는데 2초가 걸린다.
+-> 요청 스레드는 결과를 받을 때 까지 2초간 대기한다.
+-> 결과를 받고 요청 스레드가 다음 라인을 수행한다. 
+
+이건 마치 다음 상황과 같다.
+```java
+public static void main(String[] args) {
+
+  Thread thread1 = new Thread(task1, "Thread-1");
+  thread1.start();
+  thread1.join();
+
+  Thread thread2 = new Thread(task2, "Thread-2");
+  thread2.start();
+  thread.join();
+}
+```
+
+이러면 사실 일을 병렬로 처리하지 못하고 한개의 일이 끝나고 나서야 다른 일을 수행하는 것과 같다. 
+
+그런데 만약에 Future를 반환한다면?
+```java
+Future<Integer> future1 = es.submit(task1); // 블로킹X
+Future<Integer> future2 = es.submit(task2); // 블로킹X
+
+Integer sum1 = future1.get();
+Integer sum2 = future2.get();
+```
+요청 스레드는 task1을 ExecutorService에 요청한다.
+-> 요청 스레드는 즉시 Future를 반환 받는다.
+-> 작업 스레드1은 task1을 수행한다.
+
+요청 스레드는 task2를 ExecutorService에 요청한다.
+-> 요청 스레드는 즉시 Future를 반환 받는다.
+-> 작업 스레드2는 task2를 수행한다. 
+
+이렇게 되면 요청 스레드는 task1, task2를 동시에 요청할 수 있다.
+따라서 두 작업은 동시에 수행된다.
+
+- 이후에 요청 스레드는 future1.get()을 호출하며 대기한다.
+-> 작업 스레드1이 작업을 진행하는 약 2초간 대기하고 결과를 받는다.
+
+- 이후에 요청 스레드는 future2.get()을 호출하며 즉시 결과를 받는다.
+-> 작업 스레드2는 이미 2초간 작업을 완료했다. 따라서 future2.get()은 거의 즉시 결과를 반환한다. 
+
+이건 마치 다음과 같다.
+
+```java
+public static void main(String[] args) {
+  Thread thread1 = new Thread(task1, "Thread-1");
+  Thread thread2 = new Thread(task2, "Thread-2");
+  
+  thread1.start();
+  thread2.start();
+  
+  thread1.join();
+  thread2.join(); 
+}
+```
+
+**Future를 잘못 활용한 예1**
+```java
+public static void main(String[] args) {
+  Future<Integer> future1 = es.submit(task1); // non-blocking
+  Integer sum1 = future1.get(); // blocking, 2초 대기
+  
+  Future<Integer> future2 = es.submit(task2); // non-blocking
+  Integer sum2 = future2.get(); // blocking, 2초 대기 
+}
+```
+- 요청 스레드가 작업을 하나 요청하고 그 결과를 기다린다. 그리고 그 다음에 다시 다음 요청 전달하고 결과를 기다린다.
+- 총 4초의 시간이 걸린다.
+
+**Future를 잘못 활용한 예2**
+```java
+Integer sum1 = es.submit(task1).get();
+Integer sum2 = es.submit(task2).get();
+```
+- Future를 잘못 활용한 예1과 똑같은 코드이다. 대신에 submit()을 호출하고 그 결과를 변수에 담지 않고 바로 연결해서 get()을 호출한다.
+- 총 4초의 시간이 걸린다.
+
+SumTaskMainV2를 복사해서 SumTaskMainV2_Bad를 만들어보자. 
+
+```java
+package thread.executor.future;
+
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+
+public class SumTaskMainV2_Bad {
+
+  public static void main(String[] args) throws ExecutionException, InterruptedException {
+    SumTask task1 = new SumTask(1, 50);
+    SumTask task2 = new SumTask(51, 100);
+
+    ExecutorService es = Executors.newFixedThreadPool(2);
+
+    Future<Integer> future1 = es.submit(task1);
+    Integer sum1 = future1.get(); // 2초
+
+    Future<Integer> future2 = es.submit(task2);
+    Integer sum2 = future2.get(); // 2초
 
 
+    log("task1.result = " + sum1);
+    log("task2.result = " + sum2);
+
+    int sumAll = sum1 + sum2;
+    log("task1 + task2 = " + sumAll);
+    log("End");
+
+    es.close();
+
+  }
+
+  static class SumTask implements Callable<Integer> {
+    int startValue;
+    int endValue;
+
+    public SumTask(int startValue, int endValue) {
+      this.startValue = startValue;
+      this.endValue = endValue;
+    }
+
+    @Override
+    public Integer call() throws Exception {
+      log("작업 시작");
+      Thread.sleep(2000);
+      int sum = 0;
+      for(int i = startValue; i <= endValue; i++) {
+        sum += i;
+      }
+      log("작업 완료 result = " + sum);
+      return sum;
+    }
+  }
+
+}
+```
+
+```text
+20:39:06.180 [pool-1-thread-1] 작업 시작
+20:39:08.193 [pool-1-thread-1] 작업 완료 result = 1275
+20:39:08.194 [pool-1-thread-2] 작업 시작
+20:39:10.201 [pool-1-thread-2] 작업 완료 result = 3775
+20:39:10.202 [     main] task1.result = 1275
+20:39:10.202 [     main] task2.result = 3775
+20:39:10.203 [     main] task1 + task2 = 5050
+20:39:10.203 [     main] End
+```
+총 4초의 시간이 걸린 것을 확인할 수 있다.
+
+**정리**
+- Future라는 개념이 없다면 결과를 받을 때 까지 요청 스레드는 아무일도 못하고 대기해야 한다. 따라서
+다른 작업을 동시에 수행할 수도 없다.
+- Future라는 개념 덕분에 요청 스레드는 대기하지 않고, 다른 작업을 수행할 수 있다. 예를 들어서 다른 작업을
+더 요청할 수 있다. 그리고 모든 작업 요청이 끝난 다음에, 본인이 필요할 때 Future.get()을 호출해서 최종 결과를
+받을 수 있다. 
+- Future를 사용하는 경우 결과적으로 task1, task2를 동시에 요청할 수 있다.
+두 작업을 바로 요청했기 때문에 작업을 동시에 제대로 수행할 수 있다.
+- 즉, Future는 병렬 처리 및 결과 반환을 할 수 있는 것이 강점이다.
+
+## 8. Future5 - 정리
+Future는 작업의 미래 계산의 결과를 나타내며, 계산이 완료되었는지 확인하고, 완료될 때까지 기다릴 수 있는 기능을 제공한다.
+
+Future 인터페이스
+```java
+package java.util.concurrent;
+
+public interface Future<V> {
+  
+  boolean cancel(boolean mayInterruptIfRunning);
+  boolean isCancelled();
+  
+  boolean isDone();
+  
+  V get() throws InterruptedException, ExecutionException;
+  V get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException;
+  
+  enum State {
+    RUNNING,
+    SUCCESS,
+    FAILED,
+    CANCELLED
+  }
+  
+  default State state() {}
+}
+```
+
+**boolean cancel(boolean mayInterruptIfRunning)**
+- 기능 : 아직 완료되지 않은 작업을 취소한다. 
+- 매개변수 : mayInterruptIfRunning
+-> cancel(true) : Future를 취소 상태로 변경한다. 이때 작업이 실행중이라면 Thread.interrupt()를 호출해서 작업을 중단한다.
+-> cancel(false) : Future를 취소 상태로 변경한다. 단 이미 실행 중인 작업을 중단하지는 않는다.
+- 반환값 : 작업이 성공적으로 취소된 경우 true, 이미 완료되었거나 취소할 수 없는 경우 false
+- 설명 : 작업이 실행 중이 아니거나 아직 시작되지 않았으면 취소하고, 실행 중인 작업의 경우
+mayInterruptIfRunning이 true이면 중단을 시도한다.
+- 참고 : 취소 상태의 Future에 Future.get()을 호출하면 CancellationException 런타임 예외가 발생한다.
+
+**boolean isCancelled()**
+- 기능 : 작업이 취소되었는지 여부를 확인한다.
+- 반환값 : 작업이 취소된 경우 true, 그렇지 않은 경우 false
+- 설명 : 이 메서드는 작업이 cancel() 메서드에 의해 취소된 경우에 true를 반환한다.
+
+**boolean isDone()**
+- 기능 : 작업이 완료되었는지 여부를 확인한다.
+- 반환값 : 작업이 완료된 경우 true, 그렇지 않은 경우 false
+- 설명 : 작업이 정상적으로 완료되었거나, 취소되었거나, 예외가 발생하여 종료된 경우에 true를 반환한다.
+
+**State state()**
+- 기능 : Future의 상태를 반환한다.
+- RUNNING : 작업 실행 중
+- SUCCESS : 성공 완료
+- FAILED : 실패 완료
+- CANCELLED : 취소 완료
+
+**V get()**
+- 기능 : 작업이 완료될 때까지 대기하고, 완료되면 결과를 반환한다.
+- 반환값 : 작업의 결과
+- 예외
+-> InterruptedException : 대기 중에 현재 스레드가 인터럽트된 경우 발생
+-> ExecutionException : 작업 계산 중에 예외가 발생한 경우 발생
+- 설명 : 작업이 완료될 때까지 get()을 호출한 현재 스레드를 대기한다. 작업이 완료되면 결과를 반환한다.
+
+**V get(long timeout, TimeUnit unit)**
+- 기능 : get()과 같은데, 시간 초과되면 예외를 발생시킨다.
+- 매개변수
+-> timeout : 대기할 최대 시간
+-> unit : timeout 매개변수의 시간 단위 지정 
+- 반환값 : 작업의 결과
+- 예외
+-> InterruptedException : 대기 중에 현재 스레드가 인터럽트된 경우 발생 
+-> ExecutionException : 계산 중에 예외가 발생한 경우 발생
+-> TimeoutException : 주어진 시간 내에 완료되지 않은 경우 발생 
+- 설명 : 지정된 시간 동안 결과를 기다린다. 시간이 초과되면 TimeoutException을 발생시킨다.
+
+## 9. Future6 - 취소
+cancel()이 어떻게 동작하는지 알아보자.
+
+```java
+package thread.executor.future;
+
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class FutureCancelMain {
+  
+  private static boolean mayInterruptedIfRunning = true;
+  //private static boolean mayInterruptedIfRunning = false;
+
+  public static void main(String[] args) {
+    ExecutorService es = Executors.newFixedThreadPool(1);
+    Future<String> future = es.submit(new MyTask());
+    log("Future.state : " + future.state());
+    
+    // 일정 시간 후 취소 시도
+    sleep(3000);
+    
+    // cancel() 호출
+    log("future.cancel(" + mayInterruptedIfRunning + ") 호출");
+    boolean cancelResult1 = future.cancel(mayInterruptedIfRunning); 
+    log("Future.state : " + future.state()); 
+    log("cancel(" + mayInterruptedIfRunning + ") result : " + cancelResult1); // FAILED 
+    
+    // 결과 확인
+    try {
+      log("Future result : " + future.get());
+    } catch (CancellationException e) {
+      log("Future는 이미 취소 되었습니다.");
+    } catch (InterruptedException | ExecutionException e) {
+      e.printStackTrace();
+    }
+    
+    // Executor 종료
+    es.close(); 
+  }
+  
+  static class MyTask implements Callable<String> {
+    
+    @Override
+    public String call() {
+      try {
+        for (int i = 0; i < 10; i++) {
+          log("작업 중 : " + i);
+          Thread.sleep(1000);
+        }
+      } catch (InterruptedException e) {
+        log("인터럽트 발생");
+        return "Interrupted";
+      }
+      
+      return "Completed"; 
+    }
+    
+  }
+  
+}
+```
+
+실행 결과는 다음과 같다.
+
+```text
+21:50:14.816 [pool-1-thread-1] 작업 중 : 0
+21:50:14.816 [     main] Future.state : RUNNING
+21:50:15.827 [pool-1-thread-1] 작업 중 : 1
+21:50:16.833 [pool-1-thread-1] 작업 중 : 2
+21:50:17.833 [     main] future.cancel(true) 호출
+21:50:17.834 [pool-1-thread-1] 인터럽트 발생
+21:50:17.834 [     main] Future.state : CANCELLED
+21:50:17.842 [     main] cancel(true) result : true
+21:50:17.842 [     main] Future는 이미 취소 되었습니다.
+```
+
+실행 결과를 보면 딱 맞아 떨어진다. true값은 그대로니까 Future는 캔슬됐고 
+캔슬할땐 Interrupt()가 걸려있기 때문에 try 안에 있는 문장을 실행하다가 예외가 잡히므로 그 문장에 대한 로그가 안나오는 것이다.
 
 
