@@ -1129,4 +1129,462 @@ public class FutureCancelMain {
 실행 결과를 보면 딱 맞아 떨어진다. true값은 그대로니까 Future는 캔슬됐고 
 캔슬할땐 Interrupt()가 걸려있기 때문에 try 안에 있는 문장을 실행하다가 예외가 잡히므로 그 문장에 대한 로그가 안나오는 것이다.
 
+만약에 mayInterruptedIfRunning이 false라면 어떤 결과가 나올까? 
+
+```text
+15:46:15.059 [     main] Future.state : RUNNING
+15:46:15.059 [pool-1-thread-1] 작업 중 : 0
+15:46:16.068 [pool-1-thread-1] 작업 중 : 1
+15:46:17.070 [pool-1-thread-1] 작업 중 : 2
+15:46:18.075 [pool-1-thread-1] 작업 중 : 3
+15:46:18.076 [     main] future.cancel(false) 호출
+15:46:18.077 [     main] Future.state : CANCELLED
+15:46:18.085 [     main] cancel(false) result : true
+15:46:18.085 [     main] Future는 이미 취소 되었습니다.
+15:46:19.087 [pool-1-thread-1] 작업 중 : 4
+15:46:20.100 [pool-1-thread-1] 작업 중 : 5
+15:46:21.102 [pool-1-thread-1] 작업 중 : 6
+15:46:22.110 [pool-1-thread-1] 작업 중 : 7
+15:46:23.111 [pool-1-thread-1] 작업 중 : 8
+15:46:24.120 [pool-1-thread-1] 작업 중 : 9
+```
+결과는 이렇게 나온다. 
+일단 Cancel상태에서 get() 메소드를 호출하면 당연히 CancellationException 예외가 걸린다.
+그런데 cancel(false) : true인 이유는 Future는 멈췄기 때문이고 작업은 계속 수행된다.
+Thread.interrupt()를 걸지 않았기 때문이다. 
+
+## 10. Future7 - 예외
+Future.get()을 호출하면 작업의 결과값 뿐만 아니라, 작업 중에 발생한 예외도 받을 수 있다.
+
+```java
+package thread.executor.future;
+
+import java.util.concurrent.*;
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class FutureExceptionMain {
+
+  public static void main(String[] args) {
+    ExecutorService es = Executors.newFixedThreadPool(1);
+    log("작업 전달");
+    Future<Integer> future = es.submit(new ExCallable());
+    sleep(1000); // 대기
+    
+    try {
+      log("future.get() 호출 시도, future.state() : " + future.state());
+      Integer result = future.get();
+      log("result value = " + result);
+    } catch (InterruptedException e) {
+      throw new RuntimeException(e);
+    } catch (ExecutionException e) {
+      log("e = " + e);
+      Throwable cause = e.getCause();
+      log("cause = " + cause);
+    }
+    
+    es.close(); 
+  }
+  
+  static class ExCallable implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      log("Callable 실행, 예외 발생");
+      throw new IllegalStateException("ex!"); 
+    }
+  } 
+  
+}
+```
+
+결과는 다음과 같다.
+
+```text
+18:59:16.944 [     main] 작업 전달
+18:59:16.963 [pool-1-thread-1] Callable 실행, 예외 발생
+18:59:17.972 [     main] future.get() 호출 시도, future.state() : FAILED
+18:59:17.973 [     main] e = java.util.concurrent.ExecutionException: java.lang.IllegalStateException: ex!
+18:59:17.973 [     main] cause = java.lang.IllegalStateException: ex!
+```
+
+여기서 잠깐 개념을 정립하고 가자. 예전에 예외처리를 배웠을때는 catch(Exception e)가 있고 어떤 메서드를 호출 했을 때,
+그 메서드에서 throw new IOException("예외 메시지"); 라고 한다면 Exception e = new IOException("예외 메시지"); 라는 개념으로 봤다.
+다형성이니까 성립한다.
+
+그런데 위에것은 좀 다른게 ExecutionException e = new ExecutionException(new IllegalStateException("ex")); 
+ExecutionException으로 한번 감 싼 다음에 예외를 넣는다. 
+
+다음 코드를 참고하자.
+
+```java
+public ExecutionException(Throwable cause) {
+  super(cause);
+}
+```
+
+- 요청 스레드 : es.submit(new ExCallable())을 호출해서 작업을 전달한다.
+- 작업 스레드 : ExCallable을 실행하는데, IllegalStateException 예외가 발생한다.
+-> 작업 스레드는 Future에 발생한 예외를 담아둔다. 참고로 예외도 객체이다. 잡아서 필드에 보관할 수 있다.
+-> 예외가 발생했으므로 Future의 상태는 FAILED가 된다.
+- 요청 스레드 : 결과를 얻기 위해 future.get()을 호출한다.
+-> Future의 상태가 FAILED면 ExecutionException 예외를 던진다.
+-> 이 예외는 내부에 앞서 Future에 저장해둔 IllegalStateException을 포함하고 있다.
+-> e.getCause()을 호출하면 작업에서 발생한 원본 예외를 받을 수 있다.
+
+## 11. ExecutorService - 작업 컬렉션 처리
+ExecutorService는 여러 작업을 한 번에 편리하게 처리하는 invokeAll(), invokeAny() 기능을 제공한다.
+
+**작업 컬렉션 처리**
+invokeAll()
+```java
+<T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks) throws InterruptedException;
+```
+- 모든 Callable 작업을 제출하고, 모든 작업이 완료될 때까지 기다린다. 
+
+```java
+<T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks, long timeout, TimeUnit unit) throws InterruptedException;
+```
+- 지정된 시간 내에 모든 Callable 작업을 제출하고 완료될 때까지 기다린다.
+
+invokeAny()
+
+```java
+<T> T invokeAny(Collection<? extends Callable<T>> tasks) throws InterruptedException, ExecutionException;
+```
+- 하나의 Callable 작업이 완료될 때까지 기다리고, 가장 먼저 완료된 작업의 결과를 반환한다.
+- 완료되지 않은 나머지 작업은 취소한다.
+
+```java
+<T> T invokeAny(Collection<? extends Callable<T>> tasks, long timeout, TimeUnit unit) throws InterruptedException, ExecutionException;
+```
+- 지정된 시간 내에 하나의 Callable 작업이 완료될 때까지 기다리고, 가장 먼저 완료된 작업의 결과를 반환한다.
+- 완료되지 않은 나머지 작업은 취소한다.
+
+먼저 예제를 시작하기 전에 특정 시간 대기하는 CallableTask를 만들자.
+
+```java
+package thread.executor;
+
+import java.util.concurrent.Callable;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class CallableTask implements Callable<Integer> {
+  
+  private String name;
+  private int sleepMs = 1000;
+  
+  public CallableTask(String name) {
+    this.name = name;
+  }
+  
+  public CallableTask(String name, int sleepMs) {
+    this.name = name;
+    this.sleepMs = sleepMs;
+  }
+  
+  @Override
+  public Integer call() throws Exception {
+    log(name + " 실행");
+    sleep(sleepMs);
+    log(name + " 완료, return = " + sleepMs);
+    return sleepMs;
+  }
+  
+}
+```
+
+- Callable 인터페이스를 구현한다.
+- 전달 받은 sleep 값 만큼 대기한다.
+- sleep 값을 반환한다. 
+
+**ExecutorService - invokeAll()**
+```java
+package thread.executor.future;
+
+import thread.executor.CallableTask;
+
+import java.util.List;
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+
+public class InvokeAllMain {
+
+  public static void main(String[] args) throws ExecutionException, InterruptedException {
+    ExecutorService es = Executors.newFixedThreadPool(10);
+    
+    CallableTask task1 = new CallableTask("task1", 1000);
+    CallableTask task2 = new CallableTask("task2", 2000);
+    CallableTask task3 = new CallableTask("task3", 3000);
+    List<CallableTask> tasks = List.of(task1, task2, task3);
+    
+    List<Future<Integer>> futures = es.invokeAll(tasks);
+    for(Future<Integer> future : futures) {
+      Integer value = future.get();
+      log("value = " + value);
+    }
+    
+    es.close(); 
+  }
+  
+}
+```
+
+```text
+19:53:29.367 [pool-1-thread-1] task1 실행
+19:53:29.367 [pool-1-thread-3] task3 실행
+19:53:29.367 [pool-1-thread-2] task2 실행
+19:53:30.375 [pool-1-thread-1] task1 완료
+19:53:31.380 [pool-1-thread-2] task2 완료
+19:53:32.386 [pool-1-thread-3] task3 완료
+19:53:32.388 [     main] value = 1000
+19:53:32.388 [     main] value = 2000
+19:53:32.389 [     main] value = 3000
+```
+
+모든 task를 다 마쳤을때 결과물이 나온다. 
+
+참고 : invokeAll()을 쓰면 submit도 자동으로 실행되는것. 
+
+**동기 vs 비동기**
+- 동기 : 어떤 일이 있으면 그 일의 결과가 나오고나서 다음 일을 실행.
+- 비동기 : 어떤 일이 있더라도 일의 결과를 기다리지 않고 계속 일을 수행함. 
+
+## 12. Future를 활용한 예제
+먼저 다음 코드를 보고 어떤 문제가 있는지 실행 해보자. 
+
+```java
+package thread.executor.test;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class OldOrderService {
+
+  public void order(String orderNo) {
+
+    InventoryWork inventoryWork = new InventoryWork(orderNo);
+    ShippingWork shippingWork = new ShippingWork(orderNo);
+    AccountingWork accountingWork = new AccountingWork(orderNo);
+
+    // 작업 요청
+    Boolean inventoryResult = inventoryWork.call();
+    Boolean shippingResult = shippingWork.call();
+    Boolean accountingResult = accountingWork.call();
+
+    // 결과 확인
+    if (inventoryResult && shippingResult && accountingResult) {
+      log("모든 주문 처리가 성공적으로 완료되었습니다.");
+    } else {
+      log("일부 작업이 실패했습니다.");
+    }
+
+  }
+
+  static class InventoryWork {
+
+    private final String orderNo;
+
+    public InventoryWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    public Boolean call() {
+      log("재고 업데이트 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+
+  static class ShippingWork {
+
+    private final String orderNo;
+
+    public ShippingWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    public Boolean call() {
+      log("배송 시스템 알림 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+
+  static class AccountingWork {
+
+    private final String orderNo;
+
+    public AccountingWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    public Boolean call() {
+      log("회계 시스템 업데이트 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+}
+```
+
+```java
+package thread.executor.test;
+
+public class OldOrderServiceTestMain {
+
+  public static void main(String[] args) {
+    String orderNo = "Order#1234";
+    OldOrderService orderService = new OldOrderService();
+    orderService.order(orderNo);
+  }
+
+}
+```
+
+코드를 실행하면 결과는 다음과 같다. 
+
+```text
+20:48:07.135 [     main] 재고 업데이트 : Order#1234
+20:48:08.143 [     main] 배송 시스템 알림 : Order#1234
+20:48:09.155 [     main] 회계 시스템 업데이트 : Order#1234
+20:48:10.169 [     main] 모든 주문 처리가 성공적으로 완료되었습니다.
+```
+sleep(1000);도 있고 스레드가 하나여서 동기식으로 처리된다. 이걸 비동기식으로 고치면서 병렬로 일을 처리해보자. 
+
+```java
+package thread.executor.test;
+
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class NewOrderService {
+
+  private final ExecutorService es = Executors.newFixedThreadPool(3);
+
+  public void order(String orderNo) throws ExecutionException, InterruptedException {
+
+    // 작업 요청
+    Future<Boolean> future1 = es.submit(new InventoryWork(orderNo));
+    Future<Boolean> future2 = es.submit(new ShippingWork(orderNo));
+    Future<Boolean> future3 = es.submit(new AccountingWork(orderNo));
+
+    // 결과물 기다리기
+    Boolean inventoryResult = future1.get();
+    Boolean shippingResult = future2.get();
+    Boolean accountingResult = future3.get();
+
+    // 결과 확인
+    if (inventoryResult && shippingResult && accountingResult) {
+      log("모든 주문 처리가 성공적으로 완료되었습니다.");
+    } else {
+      log("일부 작업이 실패했습니다.");
+    }
+
+    es.close();
+
+  }
+
+  static class InventoryWork implements Callable<Boolean> {
+
+    private final String orderNo;
+
+    public InventoryWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    @Override
+    public Boolean call() {
+      log("재고 업데이트 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+
+  static class ShippingWork implements Callable<Boolean> {
+
+    private final String orderNo;
+
+    public ShippingWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    @Override
+    public Boolean call() {
+      log("배송 시스템 알림 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+
+  static class AccountingWork implements Callable<Boolean> {
+
+    private final String orderNo;
+
+    public AccountingWork(String orderNo) {
+      this.orderNo = orderNo;
+    }
+
+    @Override
+    public Boolean call() {
+      log("회계 시스템 업데이트 : " + orderNo);
+      sleep(1000);
+      return true;
+    }
+
+  }
+}
+```
+
+먼저 비동기식 및 병렬로 일을 처리하고 반환형을 즉시 받기 위해 implements Callable 및 메서드를 재정의하고 Future를 활용했다.
+
+```java
+package thread.executor.test;
+
+import java.util.concurrent.ExecutionException;
+
+import static util.MyLogger.log;
+
+public class NewOrderServiceTestMain {
+
+  public static void main(String[] args) {
+    String orderNo = "Order#1234";
+    NewOrderService orderService = new NewOrderService();
+    try {
+      orderService.order(orderNo);
+    } catch (InterruptedException e){
+      throw new RuntimeException(e);
+    } catch (ExecutionException e) {
+      log("e = " + e);
+      Throwable cause = e.getCause();
+      log("cause = " + cause);
+    }
+    
+  }
+
+}
+```
+
+실행하면 결과는 다음과 같다. 
+
+```text
+20:50:45.257 [pool-1-thread-2] 배송 시스템 알림 : Order#1234
+20:50:45.257 [pool-1-thread-3] 회계 시스템 업데이트 : Order#1234
+20:50:45.257 [pool-1-thread-1] 재고 업데이트 : Order#1234
+20:50:46.271 [     main] 모든 주문 처리가 성공적으로 완료되었습니다.
+```
+
+3초 걸리던 작업이 1초로 걸렸다. 비동기 및 병렬의 중요성을 알게 된 코드다. 
+
+
+
 
