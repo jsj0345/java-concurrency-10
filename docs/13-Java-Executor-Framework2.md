@@ -233,6 +233,232 @@ public class ExecutorUtils {
 - printState() 메서드를 하나 오버로딩 했다. 단순히 taskName을 출력하는 부분이 추가되었다.
 - 중복된 부분을 제거할 수 있지만, 기본 코드를 유지하기 위해 그대로 복사해서 약간만 수정했다.
 
+```java
+package thread.executor.poolsize;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.*;
+
+import static thread.executor.ExecutorUtils.printState;
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class PoolSizeMainV1 {
+
+  public static void main(String[] args) throws InterruptedException {
+    BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(2);
+    ExecutorService es = new ThreadPoolExecutor(2, 4, 3000, TimeUnit.MILLISECONDS, workQueue);
+    printState(es);
+    
+    es.execute(new RunnableTask("task1"));
+    printState(es, "task1");
+    
+    es.execute(new RunnableTask("task2"));
+    printState(es, "task2");
+    
+    es.execute(new RunnableTask("task3"));
+    printState(es, "task3");
+    
+    es.execute(new RunnableTask("task4"));
+    printState(es, "task4");
+    
+    es.execute(new RunnableTask("task5"));
+    printState(es, "task5");
+    
+    es.execute(new RunnableTask("task6"));
+    printState(es, "task6");
+    
+    try {
+      es.execute(new RunnableTask("task7"));
+    } catch (RejectedExecutionException e) {
+      log("task7 실행 거절 예외 발생 : " + e);
+    }
+    
+    sleep(3000);
+    log("== 작업 수행 완료 ==");
+    printState(es);
+    
+    sleep(3000);
+    log("== maximumPoolSize 대기 시간 초과 ==");
+    printState(es);
+    
+    es.close();
+    log("== shutdown 완료 ==");
+    printState(es);
+  }
+}
+```
+
+결과는 다음과 같다.
+
+```text
+15:37:36.520 [     main] [pool=0, active = 0, queuedTasks = 0, completedTask = 0]
+15:37:36.530 [pool-1-thread-1] task1 시작
+15:37:36.551 [     main] task1 -> [pool=1, active = 1, queuedTasks = 0, completedTask = 0]
+15:37:36.552 [     main] task2 -> [pool=2, active = 2, queuedTasks = 0, completedTask = 0]
+15:37:36.552 [pool-1-thread-2] task2 시작
+15:37:36.553 [     main] task3 -> [pool=2, active = 2, queuedTasks = 1, completedTask = 0]
+15:37:36.554 [     main] task4 -> [pool=2, active = 2, queuedTasks = 2, completedTask = 0]
+15:37:36.555 [     main] task5 -> [pool=3, active = 3, queuedTasks = 2, completedTask = 0]
+15:37:36.555 [pool-1-thread-3] task5 시작
+15:37:36.556 [     main] task6 -> [pool=4, active = 4, queuedTasks = 2, completedTask = 0]
+15:37:36.556 [pool-1-thread-4] task6 시작
+15:37:36.557 [     main] task7 실행 거절 예외 발생 : java.util.concurrent.RejectedExecutionException: Task thread.executor.RunnableTask@579bb367 rejected from java.util.concurrent.ThreadPoolExecutor@12edcd21[Running, pool size = 4, active threads = 4, queued tasks = 2, completed tasks = 0]
+15:37:37.536 [pool-1-thread-1] task1 완료
+15:37:37.537 [pool-1-thread-1] task3 시작
+15:37:37.567 [pool-1-thread-4] task6 완료
+15:37:37.567 [pool-1-thread-3] task5 완료
+15:37:37.567 [pool-1-thread-2] task2 완료
+15:37:37.567 [pool-1-thread-4] task4 시작
+15:37:38.543 [pool-1-thread-1] task3 완료
+15:37:38.574 [pool-1-thread-4] task4 완료
+15:37:39.558 [     main] == 작업 수행 완료 ==
+15:37:39.558 [     main] [pool=4, active = 0, queuedTasks = 0, completedTask = 6]
+15:37:42.566 [     main] == maximumPoolSize 대기 시간 초과 ==
+15:37:42.567 [     main] [pool=2, active = 0, queuedTasks = 0, completedTask = 6]
+15:37:42.567 [     main] == shutdown 완료 ==
+15:37:42.568 [     main] [pool=0, active = 0, queuedTasks = 0, completedTask = 6]
+```
+
+```java
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(2);
+ExecutorService es = new ThreadPoolExecutor(2, 4, 3000, TimeUnit.MILLISECONDS, workQueue); 
+```
+
+- 작업을 보관할 블로킹 큐의 구현체로 ArrayBlockingQueue(2)를 사용했다. 사이즈를 2로 설정했으므로 최대 2개까지 작업을 큐에 보관할 수 있다.
+- corePoolSize=2, maximumPoolSize=4를 사용해서 기본 스레드는 2개, 최대 스레드는 4개로 설정했다.
+-> 스레드 풀에 기본 2개의 스레드를 운영한다. 요청이 너무 많거나 급한 경우 스레드 풀은 최대 4개까지 스레드를 증가시켜서 사용할 수 있다.
+-> 이렇게 기보 스레드 수를 초과해서 만들어진 스레드를 초과 스레드라 한다.
+
+- 3000, TimeUnit.MILLISECONDS
+-> 초과 스레드는 생존할 수 있는 대기 시간을 뜻한다. 이 시간 동안 초과 스레드가 처리할 작업이 없다면 초과
+스레드는 제거된다. 
+-> 여기서는 3000 밀리초(3초)를 설정했으므로, 초과 스레드가 3초간 작업을 하지 않고 대기한다면 초과 스레드는 스레드 풀에서 제거된다.
+
+## 4. Executor 스레드 풀 관리 - 분석
+**실행 분석**
+- task1 작업을 요청한다.
+- Executor는 스레드 풀에 스레드가 core 사이즈 만큼 있는지 확인한다.
+-> core 사이즈 만큼 없다면 스레드를 하나 생성한다.
+-> 작업을 처리하기 위해 스레드를 하나 생성했기 때문에 작업을 큐에 넣을 필요 없이, 해당 스레드가 바로 작업을 처리한다.
+
+```text
+15:37:36.530 [pool-1-thread-1] task1 시작
+15:37:36.551 [     main] task1 -> [pool=1, active = 1, queuedTasks = 0, completedTask = 0]
+```
+- 새로 만들어진 스레드1이 task1을 수행한다. 
+
+```text
+15:37:36.552 [     main] task2 -> [pool=2, active = 2, queuedTasks = 0, completedTask = 0]
+15:37:36.552 [pool-1-thread-2] task2 시작
+```
+
+- task2를 요청한다.
+- Executor는 스레드 풀에 스레드가 core 사이즈 만큼 있는지 확인한다.
+-> 아직 core 사이즈 만큼 없으므로 스레드를 하나 생성한다.
+- 새로 만들어진 스레드2가 task2를 처리한다.
+
+```text
+15:37:36.553 [     main] task3 -> [pool=2, active = 2, queuedTasks = 1, completedTask = 0]
+```
+- task3 작업을 요청한다.
+- Executor는 스레드 풀에 스레드가 core 사이즈 만큼 있는지 확인한다.
+- core 사이즈 만큼 스레드가 이미 만들어져 있고, 스레드 풀에 사용할 수 있는 스레드가 없으므로 이 경우 큐에 작업을 보관한다. 
+
+```text
+15:37:36.554 [     main] task4 -> [pool=2, active = 2, queuedTasks = 2, completedTask = 0]
+```
+- task4 작업을 요청한다.
+- Executor는 스레드 풀에 스레드가 core 사이즈 만큼 있는지 확인한다.
+- core 사이즈 만큼 스레드가 이미 만들어져 있고, 스레드 풀에 사용할 수 있는 스레드가 없으므로 이 경우 큐에 작업을 보관한다.
+
+```text
+15:37:36.555 [     main] task5 -> [pool=3, active = 3, queuedTasks = 2, completedTask = 0]
+15:37:36.555 [pool-1-thread-3] task5 시작
+```
+- task5 작업을 요청한다.
+- Executor는 스레드 풀에 스레드가 core 사이즈 만큼 있는지 확인한다. -> core 사이즈 만큼 있다.
+- Executor는 큐에 보관을 시도한다. -> 큐가 가득 찼다.
+
+큐가 가득차면 긴급 상황이다. 대기하는 작업이 꽉 찰 정도로 요청이 많다는 뜻이다. 
+이 경우 Executor는 max(maximumPoolSize) 사이즈까지 초과 스레드를 만들어서 작업을 수행한다.
+- core=2 : 기본 스레드는 최대 2개
+- max=4 : 기본 스레드 2개에 초과 스레드 2개 합계 총 4개 가능
+- Executor는 초과 스레드인 스레드3을 만든다.
+- 작업을 처리하기 위해 스레드를 하나 생성했기 때문에 작업을 큐에 넣을 필요 없이, 해당 스레드가 바로 작업을 처리한다. 
+-> 참고로 이 경우 큐가 가득찼기 때문에 큐에 넣는 것도 불가능하다.
+- 스레드3이 task5를 처리한다.
+
+```text
+15:37:36.556 [     main] task6 -> [pool=4, active = 4, queuedTasks = 2, completedTask = 0]
+15:37:36.556 [pool-1-thread-4] task6 시작
+```
+- task6 작업을 요청한다.
+- 큐가 가득찼다.
+- Executor는 초과 스레드인 스레드4를 만들어서 task6을 처리한다.
+-> 큐가 가득찼기 때문에 작업을 큐에 넣는 것은 불가능하다.
+
+```text
+15:37:36.557 [     main] task7 실행 거절 예외 발생 : java.util.concurrent.RejectedExecutionException
+: Task thread.executor.RunnableTask@579bb367 rejected from java.util.concurrent.ThreadPoolExecutor@12edcd21
+[Running, pool size = 4, active threads = 4, queued tasks = 2, completed tasks = 0]
+```
+
+- task7 작업을 요청한다.
+- 큐가 가득찼다.
+- 스레드 풀의 스레드도 max 사이즈 만큼 가득찼다.
+- RejectedExecutionException이 발생한다.
+
+```text
+15:37:42.566 [     main] == maximumPoolSize 대기 시간 초과 ==
+15:37:42.567 [     main] [pool=2, active = 0, queuedTasks = 0, completedTask = 6]
+```
+- 스레드3, 스레드4와 같은 초과 스레드들은 지정된 시간까지 작업을 하지 않고 대기하면 제거된다. 긴급한 작업들이 끝난 것으로 이해하면 된다.
+- 여기서는 지정한 3초간 스레드3, 스레드4가 작업을 진행하지 않았기 때문에 스레드 풀에서 제거된다.
+- 참고로 초과 스레드가 작업을 처리할 때 마다 시간은 계속 초기화 된다.
+-> 작업 요청이 계속 들어온다면 긴급한 상황이 끝난 것이 아니다. 따라서 긴급한 상황이 끝날 때 까지는 초과 스레드를 살려두는 것이 많은 스레드를 사용해서
+작업을 더 빨리 처리할 수 있다. 
+
+**정리 - Executor 스레드 풀 관리**
+1. 작업을 요청하면 core 사이즈 만큼 스레드를 만든다.
+2. core 사이즈를 초과하면 큐에 작업을 넣는다.
+3. 큐를 초과하면 max 사이즈 만큼 스레드를 만든다. 임시로 사용되는 초과 스레드가 생성된다.
+-> 큐가 가득차서 큐에 넣을 수도 없다. 초과 스레드가 바로 수행해야 한다.
+4. max 사이즈를 초과하면 요청을 거절한다. 예외가 발생한다.
+-> 큐도 가득차고, 풀에 최대 생성 가능한 스레드 수도 가득 찼다. 작업을 받을 수 없다.
+
+**스레드 미리 생성하기**
+응답시간이 아주 중요한 서버라면, 서버가 고객의 처음 요청을 받기 전에 스레드를 스레드 풀에 미리 생성해두고 싶을 수 있다.
+스레드를 미리 생성해두면, 처음 요청에서 사용되는 스레드의 생성 시간을 줄일 수 있다.
+ThreadPoolExecutor.prestartAllCoreThreads()를 사용하면 기본 스레드를 미리 생성 할 수 있다.
+참고로 ExecutorService는 이 메서드를 제공하지 않는다. 
+
+```java
+package thread.executor;
+
+import java.util.concurrent.*;
+
+import static thread.executor.ExecutorUtils.*;
+import static util.ThreadUtils.sleep;
+
+public class PrestartPoolMain {
+
+  public static void main(String[] args) {
+    ExecutorService es = Executors.newFixedThreadPool(1000);
+    printState(es);
+    
+    ThreadPoolExecutor poolExecutor = (ThreadPoolExecutor) es;
+    poolExecutor.prestartAllCoreThreads();
+    printState(es); 
+  }
+  
+}
+```
 
 
 
