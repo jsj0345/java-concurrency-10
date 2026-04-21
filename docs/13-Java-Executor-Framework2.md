@@ -460,6 +460,238 @@ public class PrestartPoolMain {
 }
 ```
 
+## 5. Executor 전략 - 고정 풀 전략
+**Executor 스레드 풀 관리 - 다양한 전략**
+ThreadPoolExecutor를 사용하면 스레드 풀에 사용되는 숫자와 블로킹 큐등 다양한 속성을 조절할 수 있다. 
+- corePoolSize : 스레드 풀에서 관리되는 기본 스레드의 수
+- maximumPoolSize : 스레드 풀에서 관리되는 최대 스레드 수
+- keepAliveTime, TimeUnit unit : 기본 스레드 수를 초과해서 만들어진 스레드가 생존할 수 있는 대기 시간,
+이 시간 동안 처리할 작업이 없다면 초과 스레드는 제거된다. 
+- BlockingQueue workQueue : 작업을 보관할 블로킹 큐 
+
+이런 속성들을 조절하면 자신에게 맞는 스레드 풀 전략을 사용할 수 있다.
+
+자바는 Executors 클래스를 통해 3가지 기본 전략을 제공한다.
+- newSingleThreadPool() : 단일 스레드 풀 전략
+- newFixedThreadPool(nThreads) : 고정 스레드 풀 전략
+- newCachedThreadPool() : 캐시 스레드 풀 전략 
+
+newSingleThreadPool() : 단일 스레드 풀 전략
+- 스레드 풀에 기본 스레드 1개만 사용한다.
+- 큐 사이즈에 제한이 없다. (LinkedBlockingQueue)
+- 주로 간단히 사용하거나, 테스트 용도로 사용한다.
+
+```text
+new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, 
+                       new LinkedBlockingQueue<Runnable>()); 
+```
+고정 스레드 풀 전략과 캐시 스레드 풀 전략을 자세히 알아보자.
+
+**Executor 스레드 풀 관리 - 고정 풀 전략**
+newFixedThreadPool(nThreads)
+- 스레드 풀에 nThreads 만큼의 기본 스레드를 생성한다. 초과 스레드는 생성하지 않는다.
+- 큐 사이즈에 제한이 없다. (LinkedBlockingQueue)
+- 스레드 수가 고정되어 있기 때문에 CPU, 메모리 리소스가 어느정도 예측 가능한 안정적인 방식이다. 
+
+코드를 실행해보자.
+```java
+package thread.executor.poolsize;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import static thread.executor.ExecutorUtils.printState;
+import static util.MyLogger.log;
+
+public class PoolSizeMainV2 {
+
+  public static void main(String[] args) throws InterruptedException {
+    
+    ExecutorService es = Executors.newFixedThreadPool(2);
+    // ExecutorService es = new ThreadPoolExecutor(2,2, 0L
+    // , TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
+    log("pool 생성");
+    printState(es); 
+    
+    for (int i = 1; i <= 6; i++) {
+      String taskName = "task" + i;
+      es.execute(new RunnableTask(taskName));
+      printState(es, taskName);
+    }
+    es.close();
+    log("== shutdown 완료 =="); 
+    
+  }
+  
+}
+```
+코드를 실행한 결과는 다음과 같다.
+```text
+16:09:59.731 [     main] pool 생성
+16:09:59.757 [     main] [pool=0, active = 0, queuedTasks = 0, completedTask = 0]
+16:09:59.767 [pool-1-thread-1] task1 시작
+16:09:59.787 [     main] task1 -> [pool=1, active = 1, queuedTasks = 0, completedTask = 0]
+16:09:59.788 [     main] task2 -> [pool=2, active = 2, queuedTasks = 0, completedTask = 0]
+16:09:59.788 [pool-1-thread-2] task2 시작
+16:09:59.788 [     main] task3 -> [pool=2, active = 2, queuedTasks = 1, completedTask = 0]
+16:09:59.789 [     main] task4 -> [pool=2, active = 2, queuedTasks = 2, completedTask = 0]
+16:09:59.789 [     main] task5 -> [pool=2, active = 2, queuedTasks = 3, completedTask = 0]
+16:09:59.790 [     main] task6 -> [pool=2, active = 2, queuedTasks = 4, completedTask = 0]
+16:10:00.783 [pool-1-thread-1] task1 완료
+16:10:00.783 [pool-1-thread-1] task3 시작
+16:10:00.799 [pool-1-thread-2] task2 완료
+16:10:00.799 [pool-1-thread-2] task4 시작
+16:10:01.793 [pool-1-thread-1] task3 완료
+16:10:01.793 [pool-1-thread-1] task5 시작
+16:10:01.809 [pool-1-thread-2] task4 완료
+16:10:01.809 [pool-1-thread-2] task6 시작
+16:10:02.796 [pool-1-thread-1] task5 완료
+16:10:02.813 [pool-1-thread-2] task6 완료
+16:10:02.813 [     main] == shutdown 완료 ==
+```
+2개의 스레드가 안정적으로 작업을 처리하는 것을 확인할 수 있다.
+
+이 전략은 다음과 같은 특징이 있다.
+
+**특징**
+스레드 수가 고정되어 있기 때문에 CPU, 메모리 리소스가 어느정도 예측 가능한 안정적인 방식이다.
+큐 사이즈도 제한이 없어서 작업을 많이 담아두어도 문제가 없다.
+
+**주의**
+이 방식의 가장 큰 장점은 스레드 수가 고정되어서 CPU, 메모리 리소스가 어느정도 예측 가능하다는 점이다.
+따라서 일반적인 상황에 가장 안정저긍로 서비스를 운영할 수 있다. 
+하지만 상황에 따라 장점이 가장 큰 단점이 되기도 한다. 
+
+**상황1 - 점진적인 사용자 확대**
+- 개발한 서비스가 잘 되어서 사용자가 점점 늘어난다.
+- 고정 스레드 전략을 사용해서 서비스를 안정적으로 잘 운영했는데, 언젠가부터 사용자들이 서비스 응답이 점점 느려진다고 항의한다. 
+
+**상황2 - 갑작스런 요청 증가**
+- 마케팅 팀의 이벤트가 대성공 하면서 갑자기 사용자가 폭증했다.
+- 고객은 응답을 받지 못하다고 항의한다.
+
+**확인**
+- 개발자는 급하게 CPU, 메모리 사용량을 확인해보는데, 아무런 문제 없이 여유있고, 안정적으로 서비스가 운영되고 있다.
+- 고정 스레드 전략은 실행되는 스레드 수가 고정되어 있다. 따라서 사용자가 늘어나도 CPU, 메모리 사용이 확 늘어나지 않는다.
+- 큐의 사이즈를 확인해보니 요청이 수 만 건이 쌓여있다. 요청이 처리되는 시간보다 쌓이는 시간이 더 빠른 것이다.
+참고로 고정 풀 전략의 큐 사이즈는 무한이다.
+- 예를 들어서 큐에 10000건이 쌓여있는데, 고정 스레드 수가 10이고, 각 스레드가 작업을 하나 처리하는데 1초가 걸린다면 모든 작업을 다 처리하는데는 
+1000초가 걸린다. 만약 처리 속도보다 작업이 쌓이는 속도가 더 빠른 경우에는 더 문제가 된다. 
+- 서비스 초기에는 사용자가 적기 때문에 이런 문제가 없지만, 사용자가 늘어나면 문제가 될 수 있다. 
+- 갑작스런 요청 증가도 물론 마찬가지이다. 
+
+## 6. Executor 전략 - 캐시 풀 전략
+newCachedThreadPool()
+- 기본 스레드를 사용하지 않고, 60초 생존 주기를 가진 초과 스레드만 사용한다.
+- 초과 스레드의 수는 제한이 없다.
+- 큐에 작업을 저장하지 않는다. (SynchronousQueue)
+-> 대신에 생산자의 요청을 스레드 풀의 소비자 스레드가 직접 받아서 바로 처리한다.
+- 모든 요청이 대기하지 않고 스레드가 바로바로 처리한다. 따라서 빠른 처리가 가능하다.
+
+```text
+new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS
+, new SynchronousQueue<Runnable>())
+```
+
+SynchronousQueue는 아주 특별한 블로킹 큐이다.
+- BlockingQueue 인터페이스의 구현체 중 하나이다.
+- 이 큐는 내부에 저장 공간이 없다. 대신에 생산자의 작업을 소비자 스레드에게 직접 전달한다. 
+- 쉽게 이야기해서 저장 공간의 크기가 0이고, 생산자 스레드가 큐가 작업을 전달하면 소비자 스레드가 큐에서
+작업을 꺼낼 때 까지 대기한다.
+- 소비자 작업을 요청하면 기다리던 생산자가 소비자에게 직접 작업을 전달하고 반환된다. 그 반대의 경우도 같다.
+- 이름 그대로 생산자와 소비자를 동기화하는 큐이다.
+- 쉽게 이야기해서 중간에 버퍼를 두지 않는 스레드간 직거래라고 생각하면 된다. 
+
+```java
+package thread.executor.poolsize;
+
+import thread.executor.RunnableTask;
+import java.util.concurrent.*;
+
+import static thread.executor.ExecutorUtils.printState;
+import static util.MyLogger.log;
+import static util.ThreadUtils.sleep;
+
+public class PoolSizeMainV3 {
+
+  public static void main(String[] args) throws InterruptedException {
+    //ExecutorService es = Executors.newCachedThreadPool();
+    //keepAliveTime 60초 -> 3초로 조절
+    ThreadPoolExecutor es = new ThreadPoolExecutor(0, Integer.MAX_VALUE,
+        TimeUnit.SECONDS, new SynchronousQueue<>());
+    log("pool 생성");
+    printState(es);
+    
+    for(int i = 1; i <= 4; i++) {
+      String taskName = "task" + i;
+      es.execute(new RunnableTask(taskName));
+      printState(es, taskName);
+    }
+    
+    sleep(3000);
+    log("== 작업 수행 완료 ==");
+    printState(es);
+    
+    sleep(3000);
+    log("== maximumPoolSize 대기 시간 초과 ==");
+    printState(es);
+    
+    es.close();
+    log("== shutdown 완료 ==");
+    printState(es);
+    
+    
+  }
+  
+}
+```
+
+```text
+17:17:31.488 [     main] pool 생성
+17:17:31.511 [     main] [pool=0, active = 0, queuedTasks = 0, completedTask = 0]
+17:17:31.518 [pool-1-thread-1] task1 시작
+17:17:31.531 [     main] task1 -> [pool=1, active = 1, queuedTasks = 0, completedTask = 0]
+17:17:31.531 [     main] task2 -> [pool=2, active = 2, queuedTasks = 0, completedTask = 0]
+17:17:31.532 [pool-1-thread-2] task2 시작
+17:17:31.532 [     main] task3 -> [pool=3, active = 3, queuedTasks = 0, completedTask = 0]
+17:17:31.533 [pool-1-thread-3] task3 시작
+17:17:31.533 [     main] task4 -> [pool=4, active = 4, queuedTasks = 0, completedTask = 0]
+17:17:31.533 [pool-1-thread-4] task4 시작
+17:17:32.523 [pool-1-thread-1] task1 완료
+17:17:32.538 [pool-1-thread-2] task2 완료
+17:17:32.538 [pool-1-thread-3] task3 완료
+17:17:32.538 [pool-1-thread-4] task4 완료
+17:17:34.537 [     main] == 작업 수행 완료 ==
+17:17:34.537 [     main] [pool=4, active = 0, queuedTasks = 0, completedTask = 4]
+17:17:37.547 [     main] == maximumPoolSize 대기 시간 초과 ==
+17:17:37.547 [     main] [pool=0, active = 0, queuedTasks = 0, completedTask = 4]
+17:17:37.548 [     main] == shutdown 완료 ==
+```
+- 모든 작업이 대기하지 않고 작업의 수 만큼 스레드가 생기면서 바로 실행되는 것을 확인할 수 있다.
+- "maximumPoolSize 대기 시간 초과" 로그를 통해 초과 스레드가 대기 시간이 지나서 모두 사라진 것을 확인할 수 있다. 
+
+**특징**
+캐시 스레드 풀 전략은 매우 빠르고, 유연한 전략이다.
+이 전략은 기본 스레드도 없고, 대기 큐에 작업도 쌓이지 않는다. 대신에 작업 요청이 오면 초과 스레드로
+작업을 바로바로 처리한다. 따라서 빠른 처리가 가능하다. 초과 스레드의 수도 제한이 없기 때문에 CPU, 메모리 자원만 허용한다면
+시스템의 자원을 최대로 사용할 수 있다. 
+추가로 초과 스레드는 60초간 생존하기 때문에 작업 수에 맞추어 적절한 수의 스레드가 재사용된다. 
+이런 특징 때문에 요청이 갑자기 증가하면 스레드도 갑자기 증가하고, 요청이 줄어들면 스레드도 점점 줄어든다. 
+이 전략은 작업의 요청 수에 따라서 스레드도 증가하고 감소하므로, 매우 유연한 전략이다. 
+
+**Executor 스레드 풀 관리**
+1. 작업을 요청하면 core 사이즈 만큼 스레드를 만든다. 
+-> core 사이즈가 없다. 바로 core 사이즈를 초과한다.
+2. core 사이즈를 초과하면 큐에 작업을 넣는다.
+-> 큐에 작업을 넣을 수 없다. (SynchronousQueue는 큐의 저장 공간이 0인 특별한 큐이다.)
+3. 큐를 초과하면 max 사이즈 만큼 스레드를 만든다. 임시로 사용되는 초과 스레드가 생성된다.
+-> 초과 스레드가 생성된다. 물론 풀에 대기하는 초과 스레드가 있으면 재사용된다.
+4. max 사이즈를 초과하면 요청을 거절한다. 예외가 발생한다.
+-> 참고로 max 사이즈가 무제한이다. 따라서 초과 스레드를 무제한으로 만들 수 있다.
+
+
 
 
 
