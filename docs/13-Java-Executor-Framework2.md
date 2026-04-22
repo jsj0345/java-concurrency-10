@@ -691,7 +691,381 @@ public class PoolSizeMainV3 {
 4. max 사이즈를 초과하면 요청을 거절한다. 예외가 발생한다.
 -> 참고로 max 사이즈가 무제한이다. 따라서 초과 스레드를 무제한으로 만들 수 있다.
 
+**주의**
+이 방식은 작업 수에 맞추어 스레드 수가 변하기 때문에, 작업의 처리 속도가 빠르고, CPU, 메모리를 매우 유연하게
+사용할 수 있다는 장점이 있다. 하지만 상황에 따라서 장점이 가장 큰 단점이 되기도 한다.
 
+**상황1 - 점진적인 사용자 확대**
+- 개발한 서비스가 잘 되어서 사용자가 점점 늘어난다.
+- 캐시 스레드 전략을 사용하면 이런 경우 크게 문제가 되지 않는다.
+- 캐시 스레드 전략은 이런 경우에는 문제를 빠르게 찾을 수 있다. 사용자가 점점 증가하면서 스레드 사용량도 함께
+늘어난다. 따라서 CPU 메모리의 사용량도 자연스럽게 증가한다.
+- 물론 CPU, 메모리 자원은 한계가 있기 때문에 적절한 시점에 시스템을 증설해야 한다.
+그렇지 않으면 CPU, 메모리 같은 시스템 자원을 너무 많이 사용하면서 시스템이 다운될 수 있다.
+
+**상황2 - 갑작스런 요청 증가**
+- 마케팅 팀의 이벤트가 대성공 하면서 갑자기 사용자가 폭증했다.
+- 고객은 응답을 받지 못한다고 항의한다. 
+
+**상황2 - 확인**
+- 개발자는 급하게 CPU, 메모리 사용량을 확인해보는데, CPU 사용량이 100%이고, 메모리 사용량도 지나치게
+높아져있다.
+- 스레드 수를 확인해보니 스레드가 수 천개 실행되고 있다. 너무 많은 스레드가 작업을 처리하면서 시스템 전체가
+느려지는 현상이 발생하고 있다.
+- 캐시 스레드 풀 전략은 스레드가 무한으로 생성될 수 있다.
+- 수 천개의 스레드가 처리하는 속도 보다 더 많은 작업이 들어온다.
+- 시스템은 너무 많은 스레드에 잠식 당해서 거의 다운된다. 메모리도 거의 다 사용되어 버린다.
+- 시스템이 멈추는 장애가 발생한다.
+
+고정 스레드 풀 전략은 서버 자원은 여유가 있는데, 사용자만 점점 느려지는 문제가 발생할 수 있다.
+반면에 캐시 스레드 풀 전략은 서버의 자원을 최대한 사용하지만, 서버가 감당할 수 있는 임계점을 넘는 순간 시스템이 다운될 수 있다.
+
+## 7. Executor 전략 - 사용자 정의 풀 전략
+상황1 - 점진적인 사용자 확대
+-> 개발한 서비스가 잘 되어서 사용자가 점점 늘어난다.
+상황2 - 갑작스런 요청 증가
+-> 마케팅 팀의 이벤트가 대성공 하면서 갑자기 사용자가 폭증했다.
+
+다음과 같이 세분화된 전략을 사용하면 상황1, 상황2를 모두 어느정도 대응할 수 있다.
+- 일반 : 일반적인 상황에서는 CPU, 메모리 자원을 예측할 수 있도록 고정 크기의 스레드로 서비스를 안정적으로 운영한다.
+- 긴급 : 사용자의 요청이 갑자기 증가하면 긴급하게 스레드를 추가로 투입해서 작업을 빠르게 처리한다.
+- 거절 : 사용자의 요청이 폭증해서 긴급 대응도 어렵다면 사용자의 요청을 거절한다.
+
+이 방법은 평소에는 안정적으로 운영하다가, 사용자의 요청이 갑자기 증가하면 긴급하게 스레드를 더 투입해서 불을 끄는 방법이다.
+물론 긴급 상황에는 CPU, 메모리 자원을 더 사용하기 때문에 적정 수준을 찾아야 한다. 일반적으로는 여기까지 대응이 되겠지만,
+시스템이 감당할 수 없을 정도로 사용자의 요청이 폭증하면, 처리 가능한 수준의 사용자 요청만 처리하고 나머지 요청은 거절해야 한다.
+어떤 경우에도 시스템이 다운되는 최악의 상황은 피해야 한다.
+
+```text
+ExecutorService es = new ThreadPoolExecutor(100, 200, 60,
+TimeUnit.SECONDS, new ArrayBlockingQueue<>(1000)); 
+```
+- 100개의 기본 스레드를 사용한다.
+- 추가로 긴급 대응 가능한 긴급 스레드를 100개 사용한다. 긴급 스레드는 60초의 생존 주기를 가진다.
+- 1000개의 작업이 큐에 대기할 수 있다. 
+
+코드를 실행해보자.
+
+```java
+package thread.executor.poolsize;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.*;
+
+import static thread.executor.ExecutorUtils.printState;
+import static util.MyLogger.log;
+
+public class PoolSizeMainV4 {
+  
+  static final int TASK_SIZE = 1100; // 1. 일반
+  //static final int TASK_SIZE = 1200; // 2. 긴급
+  //static final int TASK_SIZE = 1201; // 3. 거절
+
+  public static void main(String[] args) throws InterruptedException {
+    ExecutorService es = new ThreadPoolExecutor(100, 200, 60,
+        TimeUnit.SECONDS, new ArrayBlockingQueue<>(1000));
+    printState(es);
+    
+    long startMs = System.currentTimeMillis();
+    
+    for (int i = 1; i <= TASK_SIZE; i++) {
+      String taskName = "task" + i;
+      try {
+        es.execute(new RunnableTask(taskName));
+        printState(es, taskName);
+      } catch (RejectedExecutionException e) {
+        log(taskName + " -> " + e);
+      }
+      
+      es.close();
+      long endMs = System.currentTimeMillis();
+      log("time : " + (endMs - startMs)); 
+    }
+  }
+  
+}
+```
+
+TASK가 1100일때 실행을 해보자. 
+
+결과가 1100줄이상이라 몇개의 결과만 보도록 하겠다.
+```text
+15:02:58.181 [     main] task101 -> [pool=100, active = 100, queuedTasks = 1, completedTask = 0]
+```
+기본 스레드 수가 100이고 101번째 같은 경우에는 아직 큐에 대기하는 작업이 없으므로 1개를 넣어서 위와 같은 결과가 나온다.
+
+```text
+15:02:58.317 [     main] task1100 -> [pool=100, active = 100, queuedTasks = 1000, completedTask = 0]
+15:12:23.819 [     main] time : 11180
+```
+활동중인 스레드 100개와 대기중인 task가 1000개다. 1000개의 task는 Queue에 담을 수 있는 최대 양이기 때문에 1000개를 담은 것이다.
+이제 여기서 task개수가 1개라도 초과되면 최대 스레드는 200이기에 Queue는 1000개만 들어갈 수 있으므로 1101번째 task는 pool과 active의 수가 1 증가하게된다.
+
+이제 코드를 TASK가 1200일 때 실행 해보자.
+
+```text
+15:10:29.507 [     main] task1101 -> [pool=101, active = 101, queuedTasks = 1000, completedTask = 0]
+15:10:35.618 [     main] time : 6299
+```
+1101번째에는 pool과 active의 값이 오른 것을 볼 수 있다. 작업 수행 시간을 보면 최대 스레드 수가 200개 일 때, 더 빠른 것을 볼 수 있다.
+이건 당연하게도 스레드 수가 그만큼 많으니 처리할 수 있는 작업량이 많기 때문이다. 
+
+이제 코드를 TASK가 1201일 때 실행 해보자.
+
+```text
+15:14:29.496 [     main] task1201 -> java.util.concurrent.RejectedExecutionException: Task thread.executor.RunnableTask@368239c8
+rejected from java.util.concurrent.ThreadPoolExecutor@12edcd21
+[Running, pool size = 200, active threads = 200, queued tasks = 1000, completed tasks = 0]
+```
+예외 메시지가 나온다. 당연하게도 최대 스레드는 200이라 1200번째까지는 문제가 없는데 1201번째는 최대 스레드도 다 활용을 했고
+큐에 작업을 담을 수가 없기 때문에 이제 거부를 하게 되는 것이다. 
+
+## 8. Executor 예외 정책
+생산자 소비자 문제를 실무에서 사용할 때는, 결국 소비자가 처리할 수 없을 정도로 생산 요청이 가득 차면 어떻게 할지를
+정해야 한다. 개발자가 인지할 수 있게 로그도 남겨야 하고, 사용자에게 현재 시스템에 문제가 있다고 알리는 것도 필요하다.
+이런 것을 위해 예외 정책이 필요하다.
+
+ThreadPoolExecutor에 작업을 요청할 때, 큐도 가득차고, 초과 스레드도 더는 할당할 수 없다면 작업을 거절한다.
+
+ThreadPoolExecutor는 작업을 거절하는 다양한 정책을 제공한다.
+- AbortPolicy : 새로운 작업을 제출할 때 RejectedExecutionException을 발생시킨다. 기본 정책이다.
+- DiscardPolicy : 새로운 작업을 조용히 버린다.
+- CallerRunsPolicy : 새로운 작업을 제출한 스레드가 대신해서 직접 작업을 실행한다.
+- 사용자 정의(RejectedExecutionHandler) : 개발자가 직접 정의한 거절 정책을 사용할 수 있다.
+
+**AbortPolicy**
+작업이 거절되면 RejectedExecutionException을 던진다. 기본적으로 설정되어 있는 정책이다.
+```java
+package thread.executor.reject;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.*;
+
+import static util.MyLogger.log;
+
+public class RejectMainV1 {
+
+  public static void main(String[] args) {
+    ExecutorService executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
+        new SynchronousQueue<>(), new ThreadPoolExecutor.AbortPolicy());
+    executor.submit(new RunnableTask("task1"));
+    
+    try {
+      executor.submit(new RunnableTask("task2"));
+    } catch (RejectedExecutionException e) {
+      log("요청 초과");
+      // 포기, 다시 시도 등 다양한 고민을 하면 된다.
+      log(e);
+    }
+    
+    executor.close();
+  }
+  
+}
+```
+
+결과를 보자. 
+
+```text
+17:21:07.073 [pool-1-thread-1] task1 시작
+17:21:07.073 [     main] 요청 초과
+17:21:07.077 [     main] java.util.concurrent.RejectedExecutionException: 
+Task java.util.concurrent.FutureTask@b1bc7ed[Not completed, task = java.util.concurrent.Executors$RunnableAdapter@1ddc4ec2[Wrapped task = thread.executor.RunnableTask@133314b]] 
+rejected from java.util.concurrent.ThreadPoolExecutor@5b6f7412[Running, pool size = 1, active threads = 1, queued tasks = 0, completed tasks = 0]
+17:21:08.092 [pool-1-thread-1] task1 완료
+```
+- task1은 풀의 스레드가 수행한다.
+- task2를 요청하면 허용 작업을 초과한다. 따라서 RejectedExecutionException이 발생한다.
+
+RejectedExecutionException 예외를 잡아서 작업을 포기하거나, 사용자에게 알리거나, 다시 시도하면 된다.
+이렇게 예외를 잡아서 필요한 코드를 직접 구현해도 되고, 아니면 다른 정책들을 사용해도 된다.
+
+**RejectedExecutionHandler**
+마지막에 전달한 AbortPolicy는 RejectedExecutionHandler의 구현체이다.
+ThreadPoolExecutor 생성자는 RejectedExecutionHandler의 구현제를 전달 받는다.
+
+```java
+public interface RejectedExecutionHandler {
+  void rejectedExecution(Runnable r, ThreadPoolExecutor executor); 
+}
+```
+
+```java
+public static class AbortPolicy implements RejectedExecutionHandler {
+  
+  public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+    throw new RejectedExecutionException("Task " + r.toString() + 
+                                            " rejected from " + e.toString());     
+  }
+  
+}
+```
+ThreadPoolExecutor는 거절해야 하는 상황이 발생하면 여기에 있는 rejectedExecution()을 호출한다.
+AbortPolicy는 RejectedExecutionException을 던지는 것을 확인할 수 있다.
+
+**DiscardPolicy**
+거절된 작업을 무시하고 아무런 예외도 발생시키지 않는다.
+
+```java
+package thread.executor.reject;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.*;
+
+public class RejectMainV2 {
+
+  public static void main(String[] args) {
+    ExecutorService executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
+        new SynchronousQueue<>(), new ThreadPoolExecutor.DiscardPolicy());
+    
+    executor.submit(new RunnableTask("task1"));
+    executor.submit(new RunnableTask("task2"));
+    executor.submit(new RunnableTask("task3"));
+    executor.close();
+    
+    
+  }
+  
+}
+```
+
+ThreadPoolExecutor 생성자 마지막에 new ThreadPoolExecutor.DiscardPolicy()를 제공하면 된다.
+
+```text
+17:37:00.674 [pool-1-thread-1] task1 시작
+17:37:01.689 [pool-1-thread-1] task1 완료
+```
+- task2, task3은 거절된다. DisCardPolicy는 조용히 버리는 정책이다.
+- 다음 구현 코드를 보면 왜 조용히 버리는 정책인지 이해가 될 것이다.
+
+```java
+public static class DiscardPolicy implements RejectedExecutionHandler {
+  public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+    // empty
+  }
+}
+```
+
+**CallerRunsPolicy**
+호출한 스레드가 직접 작업을 수행하게 된다. 이로 인해 새로운 작업을 제출하는 스레드의 속도가 느려질 수 있다.
+
+```java
+package thread.executor.reject;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+public class RejectMainV3 {
+
+  public static void main(String[] args) {
+    ExecutorService executor = new ThreadPoolExecutor(1, 1, 0,
+        TimeUnit.SECONDS, new SynchronousQueue<>(), new ThreadPoolExecutor.CallerRunsPolicy());
+    executor.submit(new RunnableTask("task1"));
+    executor.submit(new RunnableTask("task2"));
+    executor.submit(new RunnableTask("task3"));
+    executor.submit(new RunnableTask("task4"));
+    
+    executor.close(); 
+  }
+  
+  
+}
+```
+
+코드를 실행한 결과는 다음과 같다.
+
+```text
+17:44:34.276 [     main] task2 시작
+17:44:34.276 [pool-1-thread-1] task1 시작
+17:44:35.290 [     main] task2 완료
+17:44:35.290 [pool-1-thread-1] task1 완료
+17:44:35.291 [     main] task3 시작
+17:44:36.305 [     main] task3 완료
+17:44:36.306 [pool-1-thread-1] task4 시작
+17:44:37.322 [pool-1-thread-1] task4 완료
+```
+- task1은 스레드 풀에 스레드가 있어서 수행한다.
+- task2는 스레드 풀에 보관할 큐도 없고, 작업할 스레드가 없다. 거절해야 한다.
+- 이때 작업을 거절하는 대신에, 작업을 요청한 스레드에 대신 일을 시킨다.
+- task2의 작업을 main 스레드가 수행하는 것을 확인할 수 있다.
+
+이 정책의 특징은 생산자 스레드가 소비자 대신 일을 수행하는 것도 있지만, 생산자 스레드가 대신 일을 수행하는 덕분에
+작업의 생산 자체가 느려진다는 점이다. 덕분에 작업의 생산 속도가 너무 빠르다면, 생산 속도를 조절할 수 있다.
+원래대로 하면 main 스레드가 task1, task2, task3, task4를 연속해서 바로 생산해야 한다.
+CallerRunsPolicy 정책 덕분에 main 스레드는 task2를 본인이 직접 완료하고 나서야 task3을 수행할 수 있다.
+결과적으로 생산 속도가 조절되었다.
+
+```java
+import java.util.concurrent.RejectedExecutionHandler;
+
+public static class CallerRunsPolicy implements RejectedExecutionHandler {
+  public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+    if(!e.isShutdown()) {
+      r.run();
+    }
+  }
+}
+```
+
+- r.run() 코드를 보면 별도의 스레드에서 수행하는 것이 아니라 main 스레드가 직접 수행하는 것을 알 수 있다.
+- 참고로 ThreadPoolExecutor를 shutdown()을 하면 이후에 요청하는 작업을 거절하는데, 이때도 같은 정책이 적용된다.
+- 그런데 CallerRunsPolicy 정책은 shutdown() 이후에도 작업을 수행해버린다. 따라서 shutdown() 조건을 체크해서 이 경우에는 작업을 수행하지 않도록 한다.
+
+**사용자 정의**
+- 사용자 정의(RejectedExecutionHandler) : 사용자는 RejectedExecutionHandler 인터페이스를 구현하여 자신만의 거절 처리 전략을 정의할 수 있다.
+이를 통해 특정 요구사항에 맞는 작업 거절 방식을 설정할 수 있다.
+
+```java
+package thread.executor.reject;
+
+import thread.executor.RunnableTask;
+
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static util.MyLogger.log;
+
+public class RejectMainV4 {
+
+  public static void main(String[] args) {
+    ExecutorService executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS
+      , new SynchronousQueue<>(), new MyRejectedExecutionHandler());
+    
+    executor.submit(new RunnableTask("task1"));
+    executor.submit(new RunnableTask("task2"));
+    executor.submit(new RunnableTask("task3"));
+    executor.close();
+  }
+  
+  static class MyRejectedExecutionHandler implements RejectedExecutionHandler {
+    
+    static AtomicInteger count = new AtomicInteger(0);
+    
+    @Override
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+      int i = count.incrementAndGet();
+      log("[경고] 거절된 누적 작업 수 : " + i); 
+    }
+    
+  }
+  
+}
+
+```
+
+```text
+18:20:34.127 [     main] [경고] 거절된 누적 작업 수 : 1
+18:20:34.127 [pool-1-thread-1] task1 시작
+18:20:34.131 [     main] [경고] 거절된 누적 작업 수 : 2
+18:20:35.142 [pool-1-thread-1] task1 완료
+```
 
 
 
