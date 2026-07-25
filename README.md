@@ -64,3 +64,6 @@ java-concurrency-10
 - Java
 - IntelliJ IDEA
 - 각 예제 클래스의 `main` 메서드 실행
+
+## 참고
+- 코드 출처 : 김영한의 실전 자바 - 고급 1편, 멀티스레드와 동시성
