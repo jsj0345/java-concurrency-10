@@ -24,6 +24,7 @@ Thread 기본 개념부터 Thread 제어, 생명주기, `volatile`, 동기화, `
 - Concurrent Collection
 - Executor Framework
 - Thread Pool 기반 작업 처리
+- [개념 정리 파일 보기](./src/docs)
 
 ## 디렉터리 구조
 
@@ -58,7 +59,7 @@ java-concurrency-10
 - Producer-Consumer 예제를 통해 스레드 간 작업 흐름을 제어하는 방식을 학습했습니다.
 - CAS와 Concurrent Collection을 통해 락을 최소화하는 동시성 처리 방식을 확인했습니다.
 - Executor Framework를 사용해 Thread를 직접 관리하는 방식에서 Thread Pool 기반 작업 관리 방식으로 전환되는 흐름을 학습했습니다.
-- [개념 정리 파일 보기](./src/docs)
+
 
 ## 실행 환경
 
